@@ -84,8 +84,7 @@ osThreadId WatchdogTaskHandle;
 osThreadId HeatingTaskHandle;
 osThreadId ControlTaskHandle;
 osMessageQId qToHeatingTaskHandle;
-osMessageQId qToSaveTaskControlsHandle;
-osMessageQId qToSaveTaskTempsHandle;
+osMessageQId qToSaveTaskHandle;
 osMessageQId qToWatchdogTaskHandle;
 
 /* USER CODE BEGIN PV */
@@ -95,6 +94,10 @@ FATFS my_fatfs;
 FIL my_file;
 UINT my_error;
 
+typedef struct saveData_t_def {
+	int32_t Temps[30];
+	uint8_t Signals[12];
+} saveData_t;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -181,7 +184,7 @@ int main(void)
   HeatingTaskHandle = osThreadCreate(osThread(HeatingTask), NULL);
 
   /* definition and creation of ControlTask */
-  osThreadDef(ControlTask, StartControlTask, osPriorityHigh, 0, 256);
+  osThreadDef(ControlTask, StartControlTask, osPriorityHigh, 0, 1024);
   ControlTaskHandle = osThreadCreate(osThread(ControlTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -193,13 +196,9 @@ int main(void)
   osMessageQDef(qToHeatingTask, 4, 12);
   qToHeatingTaskHandle = osMessageCreate(osMessageQ(qToHeatingTask), NULL);
 
-  /* definition and creation of qToSaveTaskControls */
-  osMessageQDef(qToSaveTaskControls, 4, 12);
-  qToSaveTaskControlsHandle = osMessageCreate(osMessageQ(qToSaveTaskControls), NULL);
-
-  /* definition and creation of qToSaveTaskTemps */
-  osMessageQDef(qToSaveTaskTemps, 2, 120);
-  qToSaveTaskTempsHandle = osMessageCreate(osMessageQ(qToSaveTaskTemps), NULL);
+  /* definition and creation of qToSaveTask */
+  osMessageQDef(qToSaveTask, 2, saveData_t);
+  qToSaveTaskHandle = osMessageCreate(osMessageQ(qToSaveTask), NULL);
 
   /* definition and creation of qToWatchdogTask */
   osMessageQDef(qToWatchdogTask, 5, uint8_t);
@@ -552,6 +551,7 @@ void StartSaveTask(void const * argument)
 	const char initMessage[] = "\r\nRESET\r\n";
 	uint8_t SDBuffer[64];
 	uint8_t SDBufLen = 0;
+	saveData_t data;
 
 	f_mount(&my_fatfs, SD_Path, 1);
 	WriteToSD((uint8_t*) initMessage, sizeof(initMessage));
@@ -560,8 +560,22 @@ void StartSaveTask(void const * argument)
 	for (;;)
 	{
 		// Fetch values from all other tasks
-		// Write to SD
-		// If write failed send signal to watchdog task to reset the program
+		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE)
+		{
+			// Write to SD
+			// If write failed send signal to watchdog task to reset the program
+			for (uint32_t i = 0; i < 30; i+=5)
+			{
+				SDBufLen = sprintf((char*)SDBuffer, "%ld, %ld, %ld, %ld, %ld,",
+						data.Temps[i], data.Temps[i+1], data.Temps[i+2], data.Temps[i+3], data.Temps[i+4]);
+				WriteToSD(SDBuffer, SDBufLen);
+				HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
+			}
+			SDBufLen = sprintf((char*)SDBuffer, "\r\n");
+			WriteToSD(SDBuffer, SDBufLen);
+			HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
+
+		}
 
 		osDelay(100);
 	}
@@ -634,12 +648,13 @@ void StartControlTask(void const * argument)
 	// indexes 24 - 29 Ambient1,2,3,4,5,6
 	float Temperatures[30];
 
+	saveData_t data;
+
 	// mean temperatures that will be used as current temperature for PID algorithms, Lower6 then Upper6
 	float CalculatedTemps[12];
 	// outputs from PID for every sample, Lower6 then Upper6
 	float ControlSignals[12];
 	// converted outputs to 0-100% value to send to heating task, Lower6 than Upper6
-	uint8_t SignalsToSend[12];
 
 	/* ARM PID Instance, float_32 format */
 	arm_pid_instance_f32 PID[12];
@@ -649,6 +664,7 @@ void StartControlTask(void const * argument)
 		PID[i].Kp = PID_PARAM_KP; /* Proporcional */
 		PID[i].Ki = PID_PARAM_KI; /* Integral */
 		PID[i].Kd = PID_PARAM_KD; /* Derivative */
+		arm_pid_init_f32(&PID[i], 1);
 	}
 
 	// Configure LTCs
@@ -694,15 +710,19 @@ void StartControlTask(void const * argument)
 			}
 
 			// convert to integral value
-			SignalsToSend[i] = (uint8_t) ControlSignals[i];
+			data.Signals[i] = (uint8_t) ControlSignals[i];
+		}
+
+		for (uint32_t i = 0; i < 30; i++)
+		{
+			data.Temps[i] = (int32_t)(Temperatures[i] * 1000);
 		}
 
 		// Send current control to HeatingTask
-		xQueueSend(qToHeatingTaskHandle, SignalsToSend, 1);
+		xQueueSend(qToHeatingTaskHandle, &data.Signals, 1);
 
 		// Send current control and temperatures to Save task
-		xQueueSend(qToSaveTaskControlsHandle, SignalsToSend, 1);
-		xQueueSend(qToSaveTaskTempsHandle, Temperatures, 1);
+		xQueueSend(qToSaveTaskHandle, &data, 1);
 
 		osDelay(1000);
 	}
