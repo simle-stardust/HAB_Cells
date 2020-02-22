@@ -585,18 +585,45 @@ void StartSaveTask(void const * argument)
 		// Fetch values from all other tasks
 		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE)
 		{
-			// Write to SD
+			// Write to SD and WiFi
+
+			SDBufLen = sprintf((char*)SDBuffer, "@MarcinSetValuesKom:");
+			HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
 			// If write failed send signal to watchdog task to reset the program
 			for (uint32_t i = 0; i < 30; i+=5)
 			{
-				SDBufLen = sprintf((char*)SDBuffer, "%ld, %ld, %ld, %ld, %ld,",
+
+				SDBufLen = sprintf((char*)SDBuffer, "%ld, %ld, %ld, %ld, %ld, ",
 						data.Temps[i], data.Temps[i+1], data.Temps[i+2], data.Temps[i+3], data.Temps[i+4]);
-				WriteToSD(SDBuffer, SDBufLen);
-				HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
+				if (SDBufLen > 0)
+				{
+					WriteToSD(SDBuffer, SDBufLen);
+					HAL_UART_Transmit_IT(&huart3, SDBuffer, SDBufLen);
+					HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
+				}
+			}
+			for (uint32_t i = 0; i < 12; i+=6)
+			{
+				SDBufLen = sprintf((char*)SDBuffer, "%hu, %hu, %hu, %hu, %hu, %hu, ",
+						data.Signals[i], data.Signals[i+1], data.Signals[i+2], data.Signals[i+3], data.Signals[i+4], data.Signals[i+5]);
+				if (SDBufLen > 0)
+				{
+					WriteToSD(SDBuffer, SDBufLen);
+					HAL_UART_Transmit_IT(&huart3, SDBuffer, SDBufLen);
+					HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
+				}
 			}
 			SDBufLen = sprintf((char*)SDBuffer, "\r\n");
 			WriteToSD(SDBuffer, SDBufLen);
-			HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
+			HAL_UART_Transmit_IT(&huart3, SDBuffer, SDBufLen);
+			SDBufLen = sprintf((char*)SDBuffer, "!\r\n");
+			HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
+
+			// UART and SD transactions done, send data to WiFi now
+			// set up flags
+
+
+
 
 		}
 
