@@ -574,6 +574,7 @@ void StartSaveTask(void const * argument)
 	const char initMessage[] = "\r\nRESET\r\n";
 	uint8_t SDBuffer[64];
 	uint8_t SDBufLen = 0;
+	uint16_t StatusFlags = 0;
 	saveData_t data;
 
 	f_mount(&my_fatfs, SD_Path, 1);
@@ -593,7 +594,7 @@ void StartSaveTask(void const * argument)
 			for (uint32_t i = 0; i < 30; i+=5)
 			{
 
-				SDBufLen = sprintf((char*)SDBuffer, "%ld, %ld, %ld, %ld, %ld, ",
+				SDBufLen = sprintf((char*)SDBuffer, "%ld,%ld,%ld,%ld,%ld,",
 						data.Temps[i], data.Temps[i+1], data.Temps[i+2], data.Temps[i+3], data.Temps[i+4]);
 				if (SDBufLen > 0)
 				{
@@ -602,28 +603,30 @@ void StartSaveTask(void const * argument)
 					HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
 				}
 			}
-			for (uint32_t i = 0; i < 12; i+=6)
-			{
-				SDBufLen = sprintf((char*)SDBuffer, "%hu, %hu, %hu, %hu, %hu, %hu, ",
-						data.Signals[i], data.Signals[i+1], data.Signals[i+2], data.Signals[i+3], data.Signals[i+4], data.Signals[i+5]);
-				if (SDBufLen > 0)
-				{
-					WriteToSD(SDBuffer, SDBufLen);
-					HAL_UART_Transmit_IT(&huart3, SDBuffer, SDBufLen);
-					HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
-				}
-			}
+
+
+      SDBufLen = sprintf((char*)SDBuffer, "%hhu,%hhu,%hhu,%hhu,%hhu,%hhu, ",
+          data.Signals[0], data.Signals[1], data.Signals[2], data.Signals[3], data.Signals[4], data.Signals[5]);
+      if (SDBufLen > 0)
+      {
+        WriteToSD(SDBuffer, SDBufLen);
+        HAL_UART_Transmit_IT(&huart3, SDBuffer, SDBufLen);
+        HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
+      }
+      SDBufLen = sprintf((char*)SDBuffer, "%hhu,%hhu,%hhu,%hhu,%hhu,%hhu",
+          data.Signals[6], data.Signals[7], data.Signals[8], data.Signals[9], data.Signals[10], data.Signals[11]);
+      if (SDBufLen > 0)
+      {
+        WriteToSD(SDBuffer, SDBufLen);
+        HAL_UART_Transmit_IT(&huart3, SDBuffer, SDBufLen);
+        HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
+      }
+
 			SDBufLen = sprintf((char*)SDBuffer, "\r\n");
 			WriteToSD(SDBuffer, SDBufLen);
 			HAL_UART_Transmit_IT(&huart3, SDBuffer, SDBufLen);
-			SDBufLen = sprintf((char*)SDBuffer, "!\r\n");
+			SDBufLen = sprintf((char*)SDBuffer, ",%hd!\r\n", StatusFlags);
 			HAL_UART_Transmit_IT(&huart1, SDBuffer, SDBufLen);
-
-			// UART and SD transactions done, send data to WiFi now
-			// set up flags
-
-
-
 
 		}
 
