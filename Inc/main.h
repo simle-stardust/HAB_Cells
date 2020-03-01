@@ -120,7 +120,31 @@
 #define WiFi_RST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+#define TEMP1_DN_OK 		(uint16_t)0x0001
+#define TEMP2_DN_OK      	(uint16_t)0x0002
+#define TEMP3_DN_OK   		(uint16_t)0x0004
+#define TEMP4_DN_OK 		(uint16_t)0x0008
+#define TEMP5_DN_OK  		(uint16_t)0x0010
+#define TEMP6_DN_OK  		(uint16_t)0x0020
+#define TEMP1_UP_OK     	(uint16_t)0x0040
+#define TEMP2_UP_OK 	    (uint16_t)0x0080
+#define TEMP3_UP_OK     	(uint16_t)0x0100
+#define TEMP4_UP_OK			(uint16_t)0x0200
+#define TEMP5_UP_OK			(uint16_t)0x0400
+#define TEMP6_UP_OK			(uint16_t)0x0800
 
+#define RTC_ERR				(uint16_t)0x1000
+#define LTC_ERR				(uint16_t)0x2000
+#define SD_ERR				(uint16_t)0x4000
+#define RUNNING				(uint16_t)0x8000
+
+
+static const char error_strings[17][17] = {"I2C_PRESSURE_ERR", "I2C_RTC_ERR","I2C_GEIGER_ERR",
+		"I2C_MAX30205_ERR","I2C_HDC1080_ERR","I2C_INA3221_ERR","I2C_GYRO_ERR",
+		"I2C_ACC_ERR","I2C_BARO_ERR","DS18_ERR","SD_ERR",
+		"GPS_ERR","WIFI_ERR","LORA_NORX","LORA_FAULT",
+		"UNDEF_ERR2",
+};
 /* USER CODE END Private defines */
 
 void _Error_Handler(char *, int);

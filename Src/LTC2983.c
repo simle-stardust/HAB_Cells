@@ -110,6 +110,7 @@ static void wait_for_process_to_finish(uint8_t chip_select)
   uint8_t data;
   while (process_finished == 0)
   {
+	osDelay(10);
     data = transfer_byte(chip_select, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
     process_finished  = data & 0x40;
   }
@@ -165,7 +166,6 @@ void ConfigureLTCs(void)
 		HAL_GPIO_WritePin(LTC_RST_Ports[i], LTC_RST_Pins[i], GPIO_PIN_SET);
 	}
 	osDelay(300);
-
 
 	// ----- Channel 2: Assign Sense Resistor -----
 	channel_assignment_data = SENSOR_TYPE__SENSE_RESISTOR
