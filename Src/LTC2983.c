@@ -154,7 +154,12 @@ static uint16_t measure_channel(uint8_t chip_select, uint8_t channel_number, uin
 
 void ConfigureLTCs(void)
 {
-	uint32_t channel_assignment_data;
+	uint32_t channel_assignment_data = 0;
+
+	for (uint8_t i = 0; i < 6; i++)
+	{
+		HAL_GPIO_WritePin(LTC_CS_Ports[i], LTC_CS_Pins[i], GPIO_PIN_SET);
+	}
 
 	for (uint8_t i = 0; i < 6; i++)
 	{
@@ -166,6 +171,16 @@ void ConfigureLTCs(void)
 		HAL_GPIO_WritePin(LTC_RST_Ports[i], LTC_RST_Pins[i], GPIO_PIN_SET);
 	}
 	osDelay(300);
+
+	// ----- Check if status register is in correct state ---------------
+	/*
+	result = transfer_byte(0, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
+	result = transfer_byte(1, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
+	result = transfer_byte(2, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
+	result = transfer_byte(3, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
+	result = transfer_byte(4, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
+	result = transfer_byte(5, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
+	*/
 
 	// ----- Channel 2: Assign Sense Resistor -----
 	channel_assignment_data = SENSOR_TYPE__SENSE_RESISTOR

@@ -600,6 +600,9 @@ void StartSaveTask(void const * argument)
 
 	HAL_GPIO_WritePin(WiFI_CH_PD_GPIO_Port, WiFI_CH_PD_Pin, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(WiFi_RST_GPIO_Port, WiFi_RST_Pin, GPIO_PIN_SET);
+	memset(i2cData, 0xFF, sizeof(i2cData));
+	HAL_I2C_Master_Transmit(&hi2c1, LEDDRIVERAddr, (uint8_t*) i2cData, 2, 100);
+
 	f_mount(&my_fatfs, SD_Path, 1);
 	statusFlags |= WriteToSD((uint8_t*) initMessage, sizeof(initMessage));
 	memset(SDBuffer, 0, sizeof(SDBuffer));
@@ -607,6 +610,7 @@ void StartSaveTask(void const * argument)
 	for (;;)
 	{
 		tick = osKernelSysTick();
+		statusFlags &= LOOP_CLEAR_MASK;
 		// Fetch values from all other tasks
 		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE)
 		{
@@ -675,9 +679,13 @@ void StartSaveTask(void const * argument)
 			statusFlags |= RTC_ERR;
 		}
 
-		if (ltcReadoutTick - tick > 5 * configTICK_RATE_HZ)
+		if (tick - ltcReadoutTick > 15 * configTICK_RATE_HZ)
 		{
 			statusFlags |= LTC_ERR;
+		}
+		else
+		{
+			statusFlags &= ~LTC_ERR;
 		}
 
 		for (uint32_t i = 0; i < 12; i++)
@@ -749,13 +757,6 @@ void StartHeatingTask(void const * argument)
 			}
 			osDelay(100 - ControlValues[i]);
 		}
-		HAL_GPIO_WritePin(UpperHeater4_GPIO_Port, UpperHeater4_Pin,
-				GPIO_PIN_SET);
-		HAL_GPIO_WritePin(UpperHeater3_GPIO_Port, UpperHeater3_Pin,
-				GPIO_PIN_SET);
-		HAL_GPIO_WritePin(UpperHeater2_GPIO_Port, UpperHeater2_Pin,
-				GPIO_PIN_SET);
-		osDelay(1000);
 	}
 	/* USER CODE END StartHeatingTask */
 }

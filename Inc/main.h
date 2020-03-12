@@ -138,12 +138,14 @@
 #define SD_ERR				(uint16_t)0x4000
 #define RUNNING				(uint16_t)0x8000
 
+#define LOOP_CLEAR_MASK     (uint16_t)0x8000
 
-static const char error_strings[17][17] = {"I2C_PRESSURE_ERR", "I2C_RTC_ERR","I2C_GEIGER_ERR",
-		"I2C_MAX30205_ERR","I2C_HDC1080_ERR","I2C_INA3221_ERR","I2C_GYRO_ERR",
-		"I2C_ACC_ERR","I2C_BARO_ERR","DS18_ERR","SD_ERR",
-		"GPS_ERR","WIFI_ERR","LORA_NORX","LORA_FAULT",
-		"UNDEF_ERR2",
+
+static const char error_strings[17][17] = {"TEMP1_DN_OK", "TEMP2_DN_OK","TEMP3_DN_OK",
+		"TEMP4_DN_OK","TEMP5_DN_OK","TEMP6_DN_OK","TEMP1_UP_OK",
+		"TEMP2_UP_OK","TEMP3_UP_OK","TEMP4_UP_OK","TEMP5_UP_OK",
+		"TEMP6_UP_OK","RTC_ERR","LTC_ERR","SD_ERR",
+		"RUNNING",
 };
 /* USER CODE END Private defines */
 
