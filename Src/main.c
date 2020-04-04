@@ -52,6 +52,7 @@
 #include "fatfs.h"
 
 /* USER CODE BEGIN Includes */
+#include <inttypes.h>
 #include "LTC2983.h"
 #define ARM_MATH_CM3
 #include "arm_math.h"
@@ -60,8 +61,8 @@
 
 #define SET_TEMPERATURE  36.6f
 
-#define PID_PARAM_KP  10.0f
-#define PID_PARAM_KI  1.0f
+#define PID_PARAM_KP  1.0f
+#define PID_PARAM_KI  0.1f
 #define PID_PARAM_KD  0.1f
 
 #define LEDDRIVERAddr   (0b0100000 << 1)
@@ -87,6 +88,7 @@ osThreadId ControlTaskHandle;
 osMessageQId qToHeatingTaskHandle;
 osMessageQId qToSaveTaskHandle;
 osMessageQId qToWatchdogTaskHandle;
+osMessageQId qFromUartDebugHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -94,6 +96,17 @@ osMessageQId qToWatchdogTaskHandle;
 FATFS my_fatfs;
 FIL my_file;
 UINT my_error;
+
+uint8_t received_char = 0;
+volatile uint8_t received_cnt = 0;
+volatile uint8_t flag_PID_changed = 0;
+uint8_t received_buf[128];
+
+volatile float received_kp = PID_PARAM_KP;
+volatile float received_ki = PID_PARAM_KI;
+volatile float received_kd = PID_PARAM_KD;
+
+const char* const dataStrings[] = {"Upper Sample: ", "Lower Sample: ", "Upper Heater: ", "Lower Heater: ", "Ambient: "};
 
 typedef struct saveData_t_def
 {
@@ -118,6 +131,22 @@ void StartControlTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance == USART3)
+	{
+		if (received_cnt < sizeof(received_buf) - 1)
+		{
+			received_buf[received_cnt++] = received_char;
+		}
+		if (received_char == '\r')
+		{
+			received_buf[received_cnt-1] = '\0';
+			xQueueSendFromISR(qFromUartDebugHandle, &received_char, NULL);
+		}
+		HAL_UART_Receive_IT(&huart3, &received_char, 1);
+	}
+}
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
@@ -205,6 +234,10 @@ int main(void)
 	/* definition and creation of qToWatchdogTask */
 	osMessageQDef(qToWatchdogTask, 5, uint8_t);
 	qToWatchdogTaskHandle = osMessageCreate(osMessageQ(qToWatchdogTask), NULL);
+
+	/* definition and creation of qFromUartDebugHandle */
+	osMessageQDef(qFromUartDebug, 1, uint8_t);
+	qFromUartDebugHandle = osMessageCreate(osMessageQ(qFromUartDebug), NULL);
 
 	/* USER CODE BEGIN RTOS_QUEUES */
 
@@ -585,8 +618,10 @@ void StartSaveTask(void const * argument)
 
 	/* USER CODE BEGIN 5 */
 	const char initMessage[] = "\r\nRESET\r\n";
-	uint8_t SDBuffer[64];
+	uint8_t SDBuffer[128];
 	uint8_t SDBufLen = 0;
+	uint8_t UARTBuffer[128];
+	uint8_t UARTBufLen = 0;
 	saveData_t data;
 	uint8_t i2cData[3];
 	uint8_t hour = 0;
@@ -611,6 +646,15 @@ void StartSaveTask(void const * argument)
 	{
 		tick = osKernelSysTick();
 		statusFlags &= LOOP_CLEAR_MASK;
+
+		if (flag_PID_changed)
+		{
+			UARTBufLen = sprintf((char*) UARTBuffer, "PID changed, P= %ld, I= %ld, D= %ld\r\n",
+					(int32_t)(received_kp*100.0f), (int32_t)(received_ki*100.0f), (int32_t)(received_kd*100.0f));
+			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+			flag_PID_changed = 0;
+		}
+
 		// Fetch values from all other tasks
 		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE)
 		{
@@ -618,48 +662,75 @@ void StartSaveTask(void const * argument)
 			ltcReadoutTick = osKernelSysTick();
 
 
+			UARTBufLen = sprintf((char*) UARTBuffer, "==============================\r\n");
+			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinSetValuesKom:");
 			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			// If write failed send signal to watchdog task to reset the program
-			for (uint32_t i = 0; i < 30; i += 5)
+			for (uint32_t i = 0; i < 30; i += 6)
 			{
 
-				SDBufLen = sprintf((char*) SDBuffer, "%ld,%ld,%ld,%ld,%ld,",
-						data.Temps[i], data.Temps[i + 1], data.Temps[i + 2],
-						data.Temps[i + 3], data.Temps[i + 4]);
+				SDBufLen = sprintf((char*) SDBuffer, "%ld,%ld,%ld,%ld,%ld,%ld",
+						data.Temps[i], data.Temps[i + 1],
+						data.Temps[i + 2], data.Temps[i + 3], data.Temps[i + 4], data.Temps[i + 5]);
+				UARTBufLen = sprintf((char*) UARTBuffer, "%s %ld,%ld,%ld,%ld,%ld,%ld\r\n",
+						dataStrings[i/6], data.Temps[i], data.Temps[i + 1],
+						data.Temps[i + 2], data.Temps[i + 3], data.Temps[i + 4], data.Temps[i + 5]);
+				if (UARTBufLen > 0)
+				{
+					HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+				}
 				if (SDBufLen > 0)
 				{
 					statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-					HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
 					HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 				}
 			}
 
+			UARTBufLen = sprintf((char*) UARTBuffer, "Lower Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
+					data.Signals[0], data.Signals[1], data.Signals[2],
+					data.Signals[3], data.Signals[4], data.Signals[5]);
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
 					data.Signals[0], data.Signals[1], data.Signals[2],
 					data.Signals[3], data.Signals[4], data.Signals[5]);
+			if (UARTBufLen > 0)
+			{
+				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+			}
 			if (SDBufLen > 0)
 			{
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-				HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
+			UARTBufLen = sprintf((char*) UARTBuffer, "Upper Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
+					data.Signals[6], data.Signals[7], data.Signals[8],
+					data.Signals[9], data.Signals[10], data.Signals[11]);
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu",
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
+			if (UARTBufLen > 0)
+			{
+				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+			}
 			if (SDBufLen > 0)
 			{
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-				HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
 
-			SDBufLen = sprintf((char*) SDBuffer, "\r\n");
+			SDBufLen = sprintf((char*) SDBuffer, "%\r\n");
 			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-			HAL_UART_Transmit(&huart3, SDBuffer, SDBufLen, 100);
 			SDBufLen = sprintf((char*) SDBuffer, ",%hd!\r\n", statusFlags);
 			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 		}
+
+		/* print received characters count
+		UARTBufLen = sprintf((char*) UARTBuffer, "Cnt = %02x\r\n", received_cnt);
+		if (UARTBufLen > 0)
+		{
+			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+		}
+		*/
 
 		// Read RTC
 		memset(i2cData, 0, sizeof(i2cData));
@@ -766,11 +837,16 @@ void StartControlTask(void const * argument)
 {
 	/* USER CODE BEGIN StartControlTask */
 
+	uint8_t uart_char = 0;
+	int32_t received_kp_int = 0;
+	int32_t received_ki_int = 0;
+	int32_t received_kd_int = 0;
+
 	// array that holds current temperatures of each sample
-	// indexes 0 - 5   LowerSample1,2,3,4,5,6
-	// indexes 6 - 11  UpperSample1,2,3,4,5,6
-	// indexes 12 - 17 LowerHeater1,2,3,4,5,6
-	// indexes 18 - 23 UpperHeater1,2,3,4,5,6
+	// indexes 0 - 5   UpperSample1,2,3,4,5,6
+	// indexes 6 - 11  LowerSample1,2,3,4,5,6
+	// indexes 12 - 17 UpperHeater1,2,3,4,5,6
+	// indexes 18 - 23 LowerHeater1,2,3,4,5,6
 	// indexes 24 - 29 Ambient1,2,3,4,5,6
 	float Temperatures[30];
 
@@ -794,9 +870,40 @@ void StartControlTask(void const * argument)
 	}
 	// Configure LTCs
 	ConfigureLTCs();
+
+	memset(received_buf, 0, sizeof(received_buf));
+	// Start listening on UART
+	HAL_UART_Receive_IT(&huart3, &received_char, 1);
+
 	/* Infinite loop */
 	for (;;)
 	{
+		// check if data on UART was received
+		if (xQueueReceive(qFromUartDebugHandle, &uart_char, 0) == pdTRUE)
+		{
+			// "\r" sign was received from UART?
+			if (uart_char == '\r')
+			{
+				// check if a valid command has been received
+				if (sscanf((char*)received_buf, "P%" SCNd32 ",I%" SCNd32 ",D%" SCNd32, &received_kp_int, &received_ki_int, &received_kd_int) == 3)
+				{
+					// three arguments received, assign them and reinit PID
+					received_kp = ((float)received_kp_int)/100.0f;
+					received_ki = ((float)received_ki_int)/100.0f;
+					received_kd = ((float)received_kd_int)/100.0f;
+
+					for (uint32_t i = 0; i < 12; i++)
+					{
+						PID[i].Kp = received_kp; /* Proporcional */
+						PID[i].Ki = received_ki; /* Integral */
+						PID[i].Kd = received_kd; /* Derivative */
+						arm_pid_init_f32(&PID[i], 1);
+
+						flag_PID_changed = 1;
+					}
+				}
+			}
+		}
 		// Read LTCs, store readouts in the array
 		// To do: return status bitmask and check for errors
 		//
