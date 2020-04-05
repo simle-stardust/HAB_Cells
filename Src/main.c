@@ -109,6 +109,7 @@ volatile float received_kd = PID_PARAM_KD;
 const char* const dataStrings[] =
 { "Upper Sample: ", "Lower Sample: ", "Upper Heater: ", "Lower Heater: ",
 		"Ambient: " };
+char initMessage[] = "\r\nRESET\r\n";
 
 typedef struct saveData_t_def
 {
@@ -617,6 +618,34 @@ void arm_pid_init_f32(arm_pid_instance_f32 * S, int32_t resetStateFlag)
 	}
 
 }
+
+uint16_t ReadADC(uint8_t adcnum)
+{
+	ADC_ChannelConfTypeDef adc_ch;
+
+	switch (adcnum)
+	{
+	case 0:
+		adc_ch.Channel = ADC_CHANNEL_10;
+		break;
+	case 1:
+		adc_ch.Channel = ADC_CHANNEL_11;
+		break;
+	case 2:
+		adc_ch.Channel = ADC_CHANNEL_12;
+		break;
+	default:
+		adc_ch.Channel = ADC_CHANNEL_10;
+		break;
+	}
+
+	adc_ch.Rank = ADC_REGULAR_RANK_1;
+	adc_ch.SamplingTime = ADC_SAMPLETIME_24CYCLES;
+	HAL_ADC_ConfigChannel(&hadc, &adc_ch);
+	HAL_ADC_Start(&hadc);
+	HAL_ADC_PollForConversion(&hadc, 100);
+	return HAL_ADC_GetValue(&hadc);
+}
 /* USER CODE END 4 */
 
 /* StartSaveTask function */
@@ -626,7 +655,6 @@ void StartSaveTask(void const * argument)
 	MX_FATFS_Init();
 
 	/* USER CODE BEGIN 5 */
-	const char initMessage[] = "\r\nRESET\r\n";
 	uint8_t SDBuffer[128];
 	uint8_t SDBufLen = 0;
 	uint8_t UARTBuffer[128];
@@ -637,6 +665,9 @@ void StartSaveTask(void const * argument)
 	uint8_t minute = 0;
 	uint8_t second = 0;
 	uint16_t statusFlags = 0;
+	uint16_t ADC_thermal_int = 0;
+	uint16_t ADC_thermal_ext = 0;
+	uint16_t ADC_ele = 0;
 	uint8_t dataToWatchdog = 0;
 	memset(i2cData, 0, sizeof(i2cData));
 	memset(data.Temps, 0, sizeof(data.Temps));
@@ -650,14 +681,13 @@ void StartSaveTask(void const * argument)
 
 	f_mount(&my_fatfs, SD_Path, 1);
 	statusFlags |= WriteToSD((uint8_t*) initMessage, sizeof(initMessage));
-	HAL_UART_Transmit(&huart3, initMessage, sizeof(initMessage), 100);
+	HAL_UART_Transmit(&huart3, (char*)initMessage, sizeof(initMessage), 100);
 	memset(SDBuffer, 0, sizeof(SDBuffer));
 	/* Infinite loop */
 	for (;;)
 	{
 		tick = osKernelSysTick();
 		statusFlags &= LOOP_CLEAR_MASK;
-
 		if (flag_PID_changed)
 		{
 			UARTBufLen = sprintf((char*) UARTBuffer,
@@ -669,34 +699,43 @@ void StartSaveTask(void const * argument)
 			flag_PID_changed = 0;
 		}
 
-		// Read RTC
-		memset(i2cData, 0, sizeof(i2cData));
-		if (HAL_I2C_Mem_Read(&hi2c1, DS3231Addr, 0x00, 1, i2cData, 3, 100)
-				== HAL_OK)
-		{
-			hour = ((i2cData[0] & 0b01110000) >> 4) * 10
-					+ (i2cData[0] & 0b00001111);
-			minute = ((i2cData[1] & 0b01110000) >> 4) * 10
-					+ (i2cData[1] & 0b00001111);
-			second = ((i2cData[2] & 0b01110000) >> 4) * 10
-					+ (i2cData[2] & 0b00001111);
-			statusFlags &= ~RTC_ERR;
-			SDBufLen = sprintf((char*) SDBuffer, "%d:%d:%d,", (int16_t) hour,
-					(int16_t) minute, (int16_t) second);
-			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
-		}
-		else
-		{
-			statusFlags |= RTC_ERR;
-			SDBufLen = sprintf((char*) SDBuffer, "00:00:00,");
-			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
-		}
-
 		// Fetch values from all other tasks
 		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE)
 		{
 			// Write to SD and WiFi
 			ltcReadoutTick = osKernelSysTick();
+
+
+			ADC_thermal_int = ReadADC(0);
+			ADC_ele = ReadADC(1);
+			ADC_thermal_ext = ReadADC(2);
+
+
+			// Read RTC
+			memset(i2cData, 0, sizeof(i2cData));
+			if (HAL_I2C_Mem_Read(&hi2c1, DS3231Addr, 0x00, 1, i2cData, 3, 100)
+					== HAL_OK)
+			{
+				hour = ((i2cData[0] & 0b01110000) >> 4) * 10
+						+ (i2cData[0] & 0b00001111);
+				minute = ((i2cData[1] & 0b01110000) >> 4) * 10
+						+ (i2cData[1] & 0b00001111);
+				second = ((i2cData[2] & 0b01110000) >> 4) * 10
+						+ (i2cData[2] & 0b00001111);
+				statusFlags &= ~RTC_ERR;
+				SDBufLen = sprintf((char*) SDBuffer, "%d:%d:%d,", (int16_t) hour,
+						(int16_t) minute, (int16_t) second);
+			}
+			else
+			{
+				statusFlags |= RTC_ERR;
+				SDBufLen = sprintf((char*) SDBuffer, "00:00:00,");
+			}
+
+			if (SDBufLen > 0)
+			{
+				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
+			}
 
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"==============================\r\nTime = %s\r\n",
@@ -708,7 +747,7 @@ void StartSaveTask(void const * argument)
 			for (uint32_t i = 0; i < 30; i += 6)
 			{
 
-				SDBufLen = sprintf((char*) SDBuffer, "%ld,%ld,%ld,%ld,%ld,%ld",
+				SDBufLen = sprintf((char*) SDBuffer, "%ld,%ld,%ld,%ld,%ld,%ld,",
 						data.Temps[i], data.Temps[i + 1], data.Temps[i + 2],
 						data.Temps[i + 3], data.Temps[i + 4],
 						data.Temps[i + 5]);
@@ -774,7 +813,7 @@ void StartSaveTask(void const * argument)
 			}
 
 			SDBufLen = sprintf((char*) SDBuffer,
-					"%02x,%02x,%02x,%02x,%02x,%02x,%02x\r\n",
+					"%02x,%02x,%02x,%02x,%02x,%02x,%02x,",
 					data.LTCStatusMask[0], data.LTCStatusMask[1],
 					data.LTCStatusMask[2], data.LTCStatusMask[3],
 					data.LTCStatusMask[4], data.LTCStatusMask[5], statusFlags);
@@ -782,6 +821,25 @@ void StartSaveTask(void const * argument)
 			{
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 			}
+
+			UARTBufLen =
+					sprintf((char*) UARTBuffer,
+							"ADC Thermal internal: %u\r\nADC Thermal external: %u\r\nADC Ele: %u\r\n",
+							ADC_thermal_int, ADC_thermal_ext, ADC_ele);
+			if (UARTBufLen > 0)
+			{
+				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+			}
+
+			SDBufLen = sprintf((char*) SDBuffer,
+					"%u,%u,%u\r\n",
+					ADC_thermal_int, ADC_thermal_ext, ADC_ele);
+			if (SDBufLen > 0)
+			{
+				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
+			}
+
+
 			SDBufLen = sprintf((char*) SDBuffer, "%d!\r\n",
 					(int16_t) statusFlags);
 			if (SDBufLen > 0)
@@ -837,6 +895,7 @@ void StartSaveTask(void const * argument)
 		HAL_I2C_Master_Transmit(&hi2c1, LEDDRIVERAddr, (uint8_t*) i2cData, 2,
 				100);
 		osDelayUntil(&tick, 1000);
+
 	}
 	/* USER CODE END 5 */
 }
@@ -1127,7 +1186,7 @@ void StartControlTask(void const * argument)
 			if (CalculatedTemps.Status[i] != 1)
 			{
 				ControlSignals[i] = arm_pid_f32(&PID[i],
-						SET_TEMPERATURE - CalculatedTemps.Temps[i]);
+				SET_TEMPERATURE - CalculatedTemps.Temps[i]);
 
 				if (ControlSignals[i] > 100.0f)
 				{
