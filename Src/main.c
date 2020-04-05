@@ -106,13 +106,22 @@ volatile float received_kp = PID_PARAM_KP;
 volatile float received_ki = PID_PARAM_KI;
 volatile float received_kd = PID_PARAM_KD;
 
-const char* const dataStrings[] = {"Upper Sample: ", "Lower Sample: ", "Upper Heater: ", "Lower Heater: ", "Ambient: "};
+const char* const dataStrings[] =
+{ "Upper Sample: ", "Lower Sample: ", "Upper Heater: ", "Lower Heater: ",
+		"Ambient: " };
 
 typedef struct saveData_t_def
 {
 	int32_t Temps[30];
+	uint8_t LTCStatusMask[6];
 	uint8_t Signals[12];
 } saveData_t;
+
+typedef struct calcPIDdata_t_def
+{
+	float Temps[12];
+	uint8_t Status[12];
+} calcPIDdata_t;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -141,7 +150,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		}
 		if (received_char == '\r')
 		{
-			received_buf[received_cnt-1] = '\0';
+			received_buf[received_cnt - 1] = '\0';
 			xQueueSendFromISR(qFromUartDebugHandle, &received_char, NULL);
 		}
 		HAL_UART_Receive_IT(&huart3, &received_char, 1);
@@ -477,8 +486,8 @@ static void MX_GPIO_Init(void)
 
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOA,
-			LowerHeater1_Pin | UpperHeater1_Pin | LowerHeater2_Pin
-					| UpperHeater2_Pin, GPIO_PIN_RESET);
+	LowerHeater1_Pin | UpperHeater1_Pin | LowerHeater2_Pin | UpperHeater2_Pin,
+			GPIO_PIN_RESET);
 
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOA, LTC2_RST_Pin | LTC6_CS_Pin | LTC6_RST_Pin,
@@ -628,6 +637,7 @@ void StartSaveTask(void const * argument)
 	uint8_t minute = 0;
 	uint8_t second = 0;
 	uint16_t statusFlags = 0;
+	uint8_t dataToWatchdog = 0;
 	memset(i2cData, 0, sizeof(i2cData));
 	memset(data.Temps, 0, sizeof(data.Temps));
 	uint32_t tick = osKernelSysTick();
@@ -649,10 +659,36 @@ void StartSaveTask(void const * argument)
 
 		if (flag_PID_changed)
 		{
-			UARTBufLen = sprintf((char*) UARTBuffer, "PID changed, P= %ld, I= %ld, D= %ld\r\n",
-					(int32_t)(received_kp*100.0f), (int32_t)(received_ki*100.0f), (int32_t)(received_kd*100.0f));
+			UARTBufLen = sprintf((char*) UARTBuffer,
+					"PID changed, P= %ld, I= %ld, D= %ld\r\n",
+					(int32_t) (received_kp * 100.0f),
+					(int32_t) (received_ki * 100.0f),
+					(int32_t) (received_kd * 100.0f));
 			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			flag_PID_changed = 0;
+		}
+
+		// Read RTC
+		memset(i2cData, 0, sizeof(i2cData));
+		if (HAL_I2C_Mem_Read(&hi2c1, DS3231Addr, 0x00, 1, i2cData, 3, 100)
+				== HAL_OK)
+		{
+			hour = ((i2cData[0] & 0b01110000) >> 4) * 10
+					+ (i2cData[0] & 0b00001111);
+			minute = ((i2cData[1] & 0b01110000) >> 4) * 10
+					+ (i2cData[1] & 0b00001111);
+			second = ((i2cData[2] & 0b01110000) >> 4) * 10
+					+ (i2cData[2] & 0b00001111);
+			statusFlags &= ~RTC_ERR;
+			SDBufLen = sprintf((char*) SDBuffer, "%d:%d:%d,", (int16_t) hour,
+					(int16_t) minute, (int16_t) second);
+			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+		}
+		else
+		{
+			statusFlags |= RTC_ERR;
+			SDBufLen = sprintf((char*) SDBuffer, "00:00:00,");
+			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 		}
 
 		// Fetch values from all other tasks
@@ -661,8 +697,9 @@ void StartSaveTask(void const * argument)
 			// Write to SD and WiFi
 			ltcReadoutTick = osKernelSysTick();
 
-
-			UARTBufLen = sprintf((char*) UARTBuffer, "==============================\r\n");
+			UARTBufLen = sprintf((char*) UARTBuffer,
+					"==============================\r\nTime = %s\r\n",
+					SDBuffer);
 			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinSetValuesKom:");
 			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
@@ -671,11 +708,14 @@ void StartSaveTask(void const * argument)
 			{
 
 				SDBufLen = sprintf((char*) SDBuffer, "%ld,%ld,%ld,%ld,%ld,%ld",
-						data.Temps[i], data.Temps[i + 1],
-						data.Temps[i + 2], data.Temps[i + 3], data.Temps[i + 4], data.Temps[i + 5]);
-				UARTBufLen = sprintf((char*) UARTBuffer, "%s %ld,%ld,%ld,%ld,%ld,%ld\r\n",
-						dataStrings[i/6], data.Temps[i], data.Temps[i + 1],
-						data.Temps[i + 2], data.Temps[i + 3], data.Temps[i + 4], data.Temps[i + 5]);
+						data.Temps[i], data.Temps[i + 1], data.Temps[i + 2],
+						data.Temps[i + 3], data.Temps[i + 4],
+						data.Temps[i + 5]);
+				UARTBufLen = sprintf((char*) UARTBuffer,
+						"%s %ld,%ld,%ld,%ld,%ld,%ld\r\n", dataStrings[i / 6],
+						data.Temps[i], data.Temps[i + 1], data.Temps[i + 2],
+						data.Temps[i + 3], data.Temps[i + 4],
+						data.Temps[i + 5]);
 				if (UARTBufLen > 0)
 				{
 					HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
@@ -687,7 +727,8 @@ void StartSaveTask(void const * argument)
 				}
 			}
 
-			UARTBufLen = sprintf((char*) UARTBuffer, "Lower Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
+			UARTBufLen = sprintf((char*) UARTBuffer,
+					"Lower Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
 					data.Signals[0], data.Signals[1], data.Signals[2],
 					data.Signals[3], data.Signals[4], data.Signals[5]);
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
@@ -702,10 +743,11 @@ void StartSaveTask(void const * argument)
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
-			UARTBufLen = sprintf((char*) UARTBuffer, "Upper Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
+			UARTBufLen = sprintf((char*) UARTBuffer,
+					"Upper Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
-			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu",
+			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
 			if (UARTBufLen > 0)
@@ -718,37 +760,43 @@ void StartSaveTask(void const * argument)
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
 
-			SDBufLen = sprintf((char*) SDBuffer, "%\r\n");
-			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-			SDBufLen = sprintf((char*) SDBuffer, ",%hd!\r\n", statusFlags);
-			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+			UARTBufLen =
+					sprintf((char*) UARTBuffer,
+							"LTC Status: %02x, %02x, %02x, %02x, %02x, %02x\r\nStatusFlags: %04x\r\n",
+							data.LTCStatusMask[0], data.LTCStatusMask[1],
+							data.LTCStatusMask[2], data.LTCStatusMask[3],
+							data.LTCStatusMask[4], data.LTCStatusMask[5],
+							statusFlags);
+			if (UARTBufLen > 0)
+			{
+				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+			}
+
+			SDBufLen = sprintf((char*) SDBuffer,
+					"%02x,%02x,%02x,%02x,%02x,%02x,%02x\r\n",
+					data.LTCStatusMask[0], data.LTCStatusMask[1],
+					data.LTCStatusMask[2], data.LTCStatusMask[3],
+					data.LTCStatusMask[4], data.LTCStatusMask[5], statusFlags);
+			if (SDBufLen > 0)
+			{
+				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
+			}
+			SDBufLen = sprintf((char*) SDBuffer, "%d!\r\n",
+					(int16_t) statusFlags);
+			if (SDBufLen > 0)
+			{
+				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+			}
+
 		}
 
 		/* print received characters count
-		UARTBufLen = sprintf((char*) UARTBuffer, "Cnt = %02x\r\n", received_cnt);
-		if (UARTBufLen > 0)
-		{
-			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
-		}
-		*/
-
-		// Read RTC
-		memset(i2cData, 0, sizeof(i2cData));
-		if (HAL_I2C_Mem_Read(&hi2c1, DS3231Addr, 0x00, 1, i2cData, 3, 100)
-				== HAL_OK)
-		{
-			hour = ((i2cData[0] & 0b01110000) >> 4) * 10
-					+ (i2cData[0] & 0b00001111);
-			minute = ((i2cData[1] & 0b01110000) >> 4) * 10
-					+ (i2cData[1] & 0b00001111);
-			second = ((i2cData[2] & 0b01110000) >> 4) * 10
-					+ (i2cData[2] & 0b00001111);
-			statusFlags &= ~RTC_ERR;
-		}
-		else
-		{
-			statusFlags |= RTC_ERR;
-		}
+		 UARTBufLen = sprintf((char*) UARTBuffer, "Cnt = %02x\r\n", received_cnt);
+		 if (UARTBufLen > 0)
+		 {
+		 HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+		 }
+		 */
 
 		if (tick - ltcReadoutTick > 15 * configTICK_RATE_HZ)
 		{
@@ -765,14 +813,28 @@ void StartSaveTask(void const * argument)
 			{
 				statusFlags |= (1 << i);
 			}
+			else
+			{
+				statusFlags &= ~(1 << i);
+			}
 		}
 
+		if (statusFlags & SD_ERR)
+		{
+			dataToWatchdog = 1;
+		}
+		else
+		{
+			dataToWatchdog = 0;
+		}
+		xQueueSend(qToWatchdogTaskHandle, &dataToWatchdog, 10);
 
 		statusFlags ^= RUNNING;
 
-		i2cData[0] = (uint8_t)(~statusFlags >> 8);
-		i2cData[1] = (uint8_t)(~statusFlags & 0xFF);
-		HAL_I2C_Master_Transmit(&hi2c1, LEDDRIVERAddr, (uint8_t*) i2cData, 2, 100);
+		i2cData[0] = (uint8_t) (~statusFlags >> 8);
+		i2cData[1] = (uint8_t) (~statusFlags & 0xFF);
+		HAL_I2C_Master_Transmit(&hi2c1, LEDDRIVERAddr, (uint8_t*) i2cData, 2,
+				100);
 		osDelayUntil(&tick, 1000);
 	}
 	/* USER CODE END 5 */
@@ -782,10 +844,27 @@ void StartSaveTask(void const * argument)
 void StartWatchdogTask(void const * argument)
 {
 	/* USER CODE BEGIN StartWatchdogTask */
+	uint8_t message = 0;
+	RCC->CSR |= (1 << 0);                  // LSI enable, necessary for IWDG
+	while ((RCC->CSR & (1 << 1)) == 0)
+		;         // wait till LSI is ready
+	IWDG->KR = 0x5555;
+	IWDG->PR = 0x00000005;
+	IWDG->RLR = 0x00000FFF;
+	IWDG->KR = 0xCCCC;
 	/* Infinite loop */
 	for (;;)
 	{
-		osDelay(100);
+		xQueueReceive(qToWatchdogTaskHandle, &message, 10);
+		if (message != 0)
+		{
+			osDelay(10000);
+		}
+		else
+		{
+			IWDG->KR = 0xAAAA;
+		}
+		osDelay(1000);
 	}
 	/* USER CODE END StartWatchdogTask */
 }
@@ -842,18 +921,12 @@ void StartControlTask(void const * argument)
 	int32_t received_ki_int = 0;
 	int32_t received_kd_int = 0;
 
-	// array that holds current temperatures of each sample
-	// indexes 0 - 5   UpperSample1,2,3,4,5,6
-	// indexes 6 - 11  LowerSample1,2,3,4,5,6
-	// indexes 12 - 17 UpperHeater1,2,3,4,5,6
-	// indexes 18 - 23 LowerHeater1,2,3,4,5,6
-	// indexes 24 - 29 Ambient1,2,3,4,5,6
 	float Temperatures[30];
 
 	saveData_t data;
 
 	// mean temperatures that will be used as current temperature for PID algorithms, Lower6 then Upper6
-	float CalculatedTemps[12];
+	calcPIDdata_t CalculatedTemps;
 	// outputs from PID for every sample, Lower6 then Upper6
 	float ControlSignals[12];
 	// converted outputs to 0-100% value to send to heating task, Lower6 than Upper6
@@ -885,12 +958,14 @@ void StartControlTask(void const * argument)
 			if (uart_char == '\r')
 			{
 				// check if a valid command has been received
-				if (sscanf((char*)received_buf, "P%" SCNd32 ",I%" SCNd32 ",D%" SCNd32, &received_kp_int, &received_ki_int, &received_kd_int) == 3)
+				if (sscanf((char*) received_buf,
+						"P%" SCNd32 ",I%" SCNd32 ",D%" SCNd32, &received_kp_int,
+						&received_ki_int, &received_kd_int) == 3)
 				{
 					// three arguments received, assign them and reinit PID
-					received_kp = ((float)received_kp_int)/100.0f;
-					received_ki = ((float)received_ki_int)/100.0f;
-					received_kd = ((float)received_kd_int)/100.0f;
+					received_kp = ((float) received_kp_int) / 100.0f;
+					received_ki = ((float) received_ki_int) / 100.0f;
+					received_kd = ((float) received_kd_int) / 100.0f;
 
 					for (uint32_t i = 0; i < 12; i++)
 					{
@@ -907,35 +982,162 @@ void StartControlTask(void const * argument)
 		// Read LTCs, store readouts in the array
 		// To do: return status bitmask and check for errors
 		//
-		ReadLTCs(&Temperatures[0], UPPER_SAMPLE_MODE);
-		ReadLTCs(&Temperatures[6], LOWER_SAMPLE_MODE);
-		ReadLTCs(&Temperatures[12], UPPER_HEATER_MODE);
-		ReadLTCs(&Temperatures[18], LOWER_HEATER_MODE);
-		ReadLTCs(&Temperatures[24], AMBIENT_MODE);
+		//Sequence of each LTC record is:
+		// UPPER_SAMPLE_CHANNEL
+		// LOWER_SAMPLE_CHANNEL
+		// UPPER_HEATER_CHANNEL
+		// LOWER_HEATER_CHANNEL
+		// AMBIENT_CHANNEL
+		data.LTCStatusMask[0] = ReadLTCs(&Temperatures[0], 0);
+		data.LTCStatusMask[1] = ReadLTCs(&Temperatures[5], 1);
+		data.LTCStatusMask[2] = ReadLTCs(&Temperatures[10], 2);
+		data.LTCStatusMask[3] = ReadLTCs(&Temperatures[15], 3);
+		data.LTCStatusMask[4] = ReadLTCs(&Temperatures[20], 4);
+		data.LTCStatusMask[5] = ReadLTCs(&Temperatures[25], 5);
 
-		// Calculate control signals and send them to heating task
-		for (uint32_t i = 0; i < 6; i++)
+		// first lower samples, 0.9 * sample + 0.1 * heater
+		if (!(data.LTCStatusMask[0] & 0x02))
 		{
-			// first lower samples, 0.9 * sample + 0.1 * heater
-			CalculatedTemps[i] = 0.9f * Temperatures[i]
-					+ 0.1f * Temperatures[12 + i];
+			// update calculated temps only if measurement is valid
+			CalculatedTemps.Temps[0] = Temperatures[1]; //+ Temperatures[3];
+			CalculatedTemps.Status[0] = 0;
 		}
-		for (uint32_t i = 6; i < 12; i++)
+		else
 		{
-			// then upper samples
-			CalculatedTemps[i] = 0.9f * Temperatures[6 + i]
-					+ 0.1f * Temperatures[18 + i];
+			CalculatedTemps.Status[0] = 1;
 		}
+
+		if (!(data.LTCStatusMask[1] & 0x02))
+		{
+			CalculatedTemps.Temps[1] = Temperatures[6]; //+ 0.1f * Temperatures[8];
+			CalculatedTemps.Status[1] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[1] = 1;
+		}
+
+		if (!(data.LTCStatusMask[2] & 0x02))
+		{
+			CalculatedTemps.Temps[2] = Temperatures[11]; //+ 0.1f * Temperatures[13];
+			CalculatedTemps.Status[2] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[2] = 1;
+		}
+
+		if (!(data.LTCStatusMask[3] & 0x02))
+		{
+			CalculatedTemps.Temps[3] = Temperatures[16]; //+ 0.1f * Temperatures[18];
+			CalculatedTemps.Status[3] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[3] = 1;
+		}
+
+		if (!(data.LTCStatusMask[4] & 0x02))
+		{
+			CalculatedTemps.Temps[4] = Temperatures[21]; //+ 0.1f * Temperatures[23];
+			CalculatedTemps.Status[4] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[4] = 1;
+		}
+
+		if (!(data.LTCStatusMask[5] & 0x02))
+		{
+			CalculatedTemps.Temps[5] = Temperatures[26]; //+ 0.1f * Temperatures[28];
+			CalculatedTemps.Status[5] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[5] = 1;
+		}
+
+		// then upper samples
+		if (!(data.LTCStatusMask[0] & 0x01))
+		{
+			CalculatedTemps.Temps[6] = Temperatures[0]; //+ Temperatures[2];
+			CalculatedTemps.Status[6] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[6] = 1;
+		}
+
+		if (!(data.LTCStatusMask[1] & 0x01))
+		{
+			CalculatedTemps.Temps[7] = Temperatures[5]; //+ Temperatures[7];
+			CalculatedTemps.Status[7] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[7] = 1;
+		}
+
+		if (!(data.LTCStatusMask[2] & 0x01))
+		{
+			CalculatedTemps.Temps[8] = Temperatures[10]; //+ Temperatures[12];
+			CalculatedTemps.Status[8] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[8] = 1;
+		}
+
+		if (!(data.LTCStatusMask[3] & 0x01))
+		{
+			CalculatedTemps.Temps[9] = Temperatures[15]; //+ Temperatures[17];
+			CalculatedTemps.Status[9] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[9] = 1;
+		}
+
+		if (!(data.LTCStatusMask[4] & 0x01))
+		{
+			CalculatedTemps.Temps[10] = Temperatures[20]; //+ Temperatures[22];
+			CalculatedTemps.Status[10] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[10] = 1;
+		}
+
+		if (!(data.LTCStatusMask[5] & 0x01))
+		{
+			CalculatedTemps.Temps[11] = Temperatures[25]; //+ Temperatures[27];
+			CalculatedTemps.Status[11] = 0;
+		}
+		else
+		{
+			CalculatedTemps.Status[11] = 1;
+		}
+
 		for (uint32_t i = 0; i < 12; i++)
 		{
 			// PID calculations now
-			ControlSignals[i] = arm_pid_f32(&PID[i],
-			SET_TEMPERATURE - CalculatedTemps[i]);
-			if (ControlSignals[i] > 100.0f)
+
+			// only perform calculations if calculatedtemps status is valid
+			if (CalculatedTemps.Status[i] != 1)
 			{
-				ControlSignals[i] = 100.0f;
+				ControlSignals[i] = arm_pid_f32(&PID[i],
+						SET_TEMPERATURE - CalculatedTemps.Temps[i]);
+
+				if (ControlSignals[i] > 100.0f)
+				{
+					ControlSignals[i] = 100.0f;
+				}
+				else if (ControlSignals[i] < 0.0f)
+				{
+					ControlSignals[i] = 0.0f;
+				}
 			}
-			else if (ControlSignals[i] < 0.0f)
+			else
 			{
 				ControlSignals[i] = 0.0f;
 			}
@@ -944,9 +1146,20 @@ void StartControlTask(void const * argument)
 			data.Signals[i] = (uint8_t) ControlSignals[i];
 		}
 
-		for (uint32_t i = 0; i < 30; i++)
+		for (uint32_t i = 0; i < 5; i++)
 		{
-			data.Temps[i] = (int32_t) (Temperatures[i] * 1000);
+			for (uint32_t j = 0; j < 6; j++)
+			{
+				// Fill table in sequence:
+				// UPPER_SAMPLE_CHANNEL1,2,3,4,5,6
+				// LOWER_SAMPLE_CHANNEL1,2,3,4,5,6
+				// UPPER_HEATER_CHANNEL1,2,3,4,5,6
+				// LOWER_HEATER_CHANNEL1,2,3,4,5,6
+				// AMBIENT_CHANNEL1,2,3,4,5,6
+
+				data.Temps[(i * 6) + j] = (int32_t) (Temperatures[(j * 5) + i]
+						* 1000);
+			}
 		}
 
 		// Send current control to HeatingTask

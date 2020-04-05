@@ -13,6 +13,14 @@
 
 extern SPI_HandleTypeDef hspi1;
 
+
+#define UPPER_SAMPLE_CHANNEL 10
+#define	LOWER_SAMPLE_CHANNEL  7
+#define	UPPER_HEATER_CHANNEL 13
+#define	LOWER_HEATER_CHANNEL  4
+#define	AMBIENT_CHANNEL      16
+
+
 GPIO_TypeDef * LTC_CS_Ports[6] =
 { LTC1_CS_GPIO_Port, LTC2_CS_GPIO_Port,
 LTC3_CS_GPIO_Port, LTC4_CS_GPIO_Port,
@@ -28,7 +36,7 @@ uint16_t LTC_CS_Pins[6] =
 
 uint16_t LTC_RST_Pins[6] =
 { LTC1_RST_Pin, LTC2_RST_Pin, LTC3_RST_Pin, LTC4_RST_Pin, LTC5_RST_Pin,
-		LTC6_RST_Pin };
+LTC6_RST_Pin };
 
 // *********************
 // SPI RAM data transfer
@@ -106,14 +114,15 @@ static uint16_t get_start_address(uint16_t base_address, uint8_t channel_number)
 
 static void wait_for_process_to_finish(uint8_t chip_select)
 {
-  uint8_t process_finished = 0;
-  uint8_t data;
-  while (process_finished == 0)
-  {
-	osDelay(10);
-    data = transfer_byte(chip_select, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
-    process_finished  = data & 0x40;
-  }
+	uint8_t process_finished = 0;
+	uint8_t data;
+	while (process_finished == 0)
+	{
+		osDelay(10);
+		data = transfer_byte(chip_select, READ_FROM_RAM,
+				COMMAND_STATUS_REGISTER, 0);
+		process_finished = data & 0x40;
+	}
 }
 
 static void assign_channel(uint8_t chip, uint8_t channel_number,
@@ -126,37 +135,44 @@ static void assign_channel(uint8_t chip, uint8_t channel_number,
 
 static void convert_channel(uint8_t chip_select, uint8_t channel_number)
 {
-  // Start conversion
-  transfer_byte(chip_select, WRITE_TO_RAM, COMMAND_STATUS_REGISTER, CONVERSION_CONTROL_BYTE | channel_number);
+	// Start conversion
+	transfer_byte(chip_select, WRITE_TO_RAM, COMMAND_STATUS_REGISTER,
+			CONVERSION_CONTROL_BYTE | channel_number);
 
-  wait_for_process_to_finish(chip_select);
+	wait_for_process_to_finish(chip_select);
 }
 
 // *********************************
 // Get results
 // *********************************
-uint16_t get_result(uint8_t chip_select, uint8_t channel_number, uint8_t channel_output)
+uint32_t get_result(uint8_t chip_select, uint8_t channel_number,
+		uint8_t channel_output)
 {
-  uint32_t raw_data;
-  uint16_t start_address = get_start_address(CONVERSION_RESULT_MEMORY_BASE, channel_number);
+	uint32_t raw_data;
+	uint16_t start_address = get_start_address(CONVERSION_RESULT_MEMORY_BASE,
+			channel_number);
 
-  raw_data = transfer_four_bytes(chip_select, READ_FROM_RAM, start_address, 0);
+	raw_data = transfer_four_bytes(chip_select, READ_FROM_RAM, start_address,
+			0);
 
-  // 24 LSB's are conversion result
-  return raw_data & 0xFFFFFF;
+	// 24 LSB's are conversion result
+	return raw_data;
 }
 
-static uint16_t measure_channel(uint8_t chip_select, uint8_t channel_number, uint8_t channel_output)
+static uint32_t measure_channel(uint8_t chip_select, uint8_t channel_number,
+		uint8_t channel_output)
 {
-    convert_channel(chip_select, channel_number);
-    return get_result(chip_select, channel_number, channel_output);
+	convert_channel(chip_select, channel_number);
+	return get_result(chip_select, channel_number, channel_output);
+}
+
+static void set_sleep(uint8_t LTCNum)
+{
+	transfer_byte(LTCNum, WRITE_TO_RAM, COMMAND_STATUS_REGISTER, 0x97);
 }
 
 void ConfigureLTCs(void)
 {
-	uint32_t channel_assignment_data = 0;
-	volatile uint8_t result = 0;
-
 	for (uint8_t i = 0; i < 6; i++)
 	{
 		HAL_GPIO_WritePin(LTC_CS_Ports[i], LTC_CS_Pins[i], GPIO_PIN_SET);
@@ -173,74 +189,84 @@ void ConfigureLTCs(void)
 	}
 	osDelay(300);
 
-	// ----- Check if status register is in correct state ---------------
-
+	// ----- Check if status register is in correct state (for debug purposes)---------------
+/*
 	result = transfer_byte(0, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
 	result = transfer_byte(1, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
 	result = transfer_byte(2, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
 	result = transfer_byte(3, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
 	result = transfer_byte(4, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
 	result = transfer_byte(5, READ_FROM_RAM, COMMAND_STATUS_REGISTER, 0);
+*/
+	set_sleep(0);
+	set_sleep(1);
+	set_sleep(2);
+	set_sleep(3);
+	set_sleep(4);
+	set_sleep(5);
+}
 
+uint8_t ReadLTCs(float* out, uint8_t LTCNum)
+{
+	uint32_t measurements[5];
+	uint32_t channel_assignment_data = 0;
+	uint8_t retval = 0;
+	for (uint8_t i = 0; i < 6; i++)
+	{
+		HAL_GPIO_WritePin(LTC_CS_Ports[i], LTC_CS_Pins[i], GPIO_PIN_RESET);
+	}
+	osDelay(10);
+	for (uint8_t i = 0; i < 6; i++)
+	{
+		HAL_GPIO_WritePin(LTC_CS_Ports[i], LTC_CS_Pins[i], GPIO_PIN_SET);
+	}
+	osDelay(200);
+
+
+	// ----- All Channels: Assign RTD PT-100 -----
+	channel_assignment_data = SENSOR_TYPE__RTD_PT_100 | RTD_RSENSE_CHANNEL__2
+			| RTD_NUM_WIRES__4_WIRE | RTD_EXCITATION_MODE__ROTATION_SHARING
+			| RTD_EXCITATION_CURRENT__100UA | RTD_STANDARD__AMERICAN;
+	assign_channel(LTCNum, 4, channel_assignment_data);
+	assign_channel(LTCNum, 7, channel_assignment_data);
+	assign_channel(LTCNum, 10, channel_assignment_data);
+	assign_channel(LTCNum, 13, channel_assignment_data);
+	assign_channel(LTCNum, 16, channel_assignment_data);
 
 	// ----- Channel 2: Assign Sense Resistor -----
 	channel_assignment_data = SENSOR_TYPE__SENSE_RESISTOR
 			| (uint32_t) 0x219800 << SENSE_RESISTOR_VALUE_LSB; // sense resistor - value: 2015.
-	for (uint8_t i = 0; i < 6; i++)
-	{
-		assign_channel(i, 2, channel_assignment_data);
-	}
-	// ----- Channel 4: Assign RTD PT-1000 -----
-	channel_assignment_data = SENSOR_TYPE__RTD_PT_100 | RTD_RSENSE_CHANNEL__2
-			| RTD_NUM_WIRES__4_WIRE | RTD_EXCITATION_MODE__ROTATION_SHARING
-			| RTD_EXCITATION_CURRENT__100UA | RTD_STANDARD__AMERICAN;
-	for (uint8_t i = 0; i < 6; i++)
-	{
-		assign_channel(i, 4, channel_assignment_data);
-		assign_channel(i, 7, channel_assignment_data);
-		assign_channel(i, 10, channel_assignment_data);
-		assign_channel(i, 13, channel_assignment_data);
-		assign_channel(i, 16, channel_assignment_data);
-		// -- Set global parameters
-		transfer_byte(i, WRITE_TO_RAM, 0xF0, TEMP_UNIT__C |
-		REJECTION__50_60_HZ);
-		// -- Set any extra delay between conversions (in this case, 0*100us)
-		transfer_byte(i, WRITE_TO_RAM, 0xFF, 0);
-	}
 
-}
+	assign_channel(LTCNum, 2, channel_assignment_data);
 
-void ReadLTCs(float* out, LtcReadMode_t mode)
-{
-	uint8_t channel = 0;
-	switch (mode)
-	{
-	case UPPER_SAMPLE_MODE:
-		channel = 10;
-		break;
+	measurements[0] = measure_channel(LTCNum, UPPER_SAMPLE_CHANNEL, TEMPERATURE); // Ch 4: RTD PT-1000
+	measurements[1] = measure_channel(LTCNum, LOWER_SAMPLE_CHANNEL, TEMPERATURE); // Ch 4: RTD PT-1000
+	measurements[2] = measure_channel(LTCNum, UPPER_HEATER_CHANNEL, TEMPERATURE); // Ch 4: RTD PT-1000
+	measurements[3] = measure_channel(LTCNum, LOWER_HEATER_CHANNEL, TEMPERATURE); // Ch 4: RTD PT-1000
+	measurements[4] = measure_channel(LTCNum, AMBIENT_CHANNEL, TEMPERATURE); // Ch 4: RTD PT-1000
 
-	case LOWER_SAMPLE_MODE:
-		channel = 7;
-		break;
+	// set LTC to sleep
+	set_sleep(LTCNum);
 
-	case UPPER_HEATER_MODE:
-		channel = 13;
-		break;
+	// if conversion result has any error bits set, set bit in returned value
+	retval |= ((measurements[0] & 0xFF000000) != 0x01000000) ? 0x01 : 0x00;
+	retval |= ((measurements[1] & 0xFF000000) != 0x01000000) ? 0x02 : 0x00;
+	retval |= ((measurements[2] & 0xFF000000) != 0x01000000) ? 0x04 : 0x00;
+	retval |= ((measurements[3] & 0xFF000000) != 0x01000000) ? 0x08 : 0x00;
+	retval |= ((measurements[4] & 0xFF000000) != 0x01000000) ? 0x10 : 0x00;
 
-	case LOWER_HEATER_MODE:
-		channel = 4;
-		break;
+	// clear error flags before conversion
+	measurements[0] &= 0x00FFFFFF;
+	measurements[1] &= 0x00FFFFFF;
+	measurements[2] &= 0x00FFFFFF;
+	measurements[3] &= 0x00FFFFFF;
+	measurements[4] &= 0x00FFFFFF;
 
-	default:
-	case AMBIENT_MODE:
-		channel = 16;
-		break;
+	*(out) = ((float) measurements[0]) / 1024.0f; // Ch 4: RTD PT-1000
+	*(out + 1) = ((float) measurements[1]) / 1024.0f; // Ch 4: RTD PT-1000
+	*(out + 2) = ((float) measurements[2]) / 1024.0f; // Ch 4: RTD PT-1000
+	*(out + 3) = ((float) measurements[3]) / 1024.0f; // Ch 4: RTD PT-1000
+	*(out + 4) = ((float) measurements[4]) / 1024.0f; // Ch 4: RTD PT-1000
 
-	}
-	*(out) = (float)measure_channel(0, channel, TEMPERATURE)/1024;      	// Ch 4: RTD PT-1000
-	*(out + 1) = (float)measure_channel(1, channel, TEMPERATURE)/1024;      // Ch 4: RTD PT-1000
-	*(out + 2) = (float)measure_channel(2, channel, TEMPERATURE)/1024;      // Ch 4: RTD PT-1000
-	*(out + 3) = (float)measure_channel(3, channel, TEMPERATURE)/1024;      // Ch 4: RTD PT-1000
-	*(out + 4) = (float)measure_channel(4, channel, TEMPERATURE)/1024;      // Ch 4: RTD PT-1000
-	*(out + 5) = (float)measure_channel(5, channel, TEMPERATURE)/1024;      // Ch 4: RTD PT-1000
+	return retval;
 }
