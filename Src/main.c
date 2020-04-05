@@ -580,17 +580,17 @@ static uint16_t WriteToSD(uint8_t* buf, uint8_t len)
 			fresult = f_close(&my_file);
 			if (fresult != FR_OK)
 			{
-				returnCode = 1;
+				returnCode = SD_ERR;
 			}
 		}
 		else
 		{
-			returnCode = 2;
+			returnCode = SD_ERR;
 		}
 	}
 	else
 	{
-		returnCode = 3;
+		returnCode = SD_ERR;
 	}
 	__enable_irq();
 	osDelay(10);
@@ -650,6 +650,7 @@ void StartSaveTask(void const * argument)
 
 	f_mount(&my_fatfs, SD_Path, 1);
 	statusFlags |= WriteToSD((uint8_t*) initMessage, sizeof(initMessage));
+	HAL_UART_Transmit(&huart3, initMessage, sizeof(initMessage), 100);
 	memset(SDBuffer, 0, sizeof(SDBuffer));
 	/* Infinite loop */
 	for (;;)
@@ -858,7 +859,7 @@ void StartWatchdogTask(void const * argument)
 		xQueueReceive(qToWatchdogTaskHandle, &message, 10);
 		if (message != 0)
 		{
-			osDelay(10000);
+			osDelay(30000);
 		}
 		else
 		{
