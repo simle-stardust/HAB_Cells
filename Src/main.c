@@ -563,12 +563,15 @@ static uint16_t WriteToSD(uint8_t* buf, uint8_t len)
 	__disable_irq();
 	fresult = f_open(&my_file, my_file_name, FA_WRITE | FA_OPEN_ALWAYS);
 	fileSize = f_size(&my_file);
+	fresult = f_close(&my_file);
 	if (fileSize > 1000000)
 	{
 		datalogNum++;
 		sprintf(my_file_name, "cells%d.txt", datalogNum);
+		// reset file object
+		memset(&my_file, 0x00, sizeof(my_file));
+		fileSize  = 0;
 	}
-	fresult = f_close(&my_file);
 	__enable_irq();
 	__disable_irq();
 	fresult = f_open(&my_file, my_file_name, FA_WRITE | FA_OPEN_ALWAYS);
