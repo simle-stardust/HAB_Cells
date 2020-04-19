@@ -62,8 +62,8 @@
 #define SET_TEMPERATURE  36.6f
 
 #define PID_PARAM_KP  1.0f
-#define PID_PARAM_KI  0.1f
-#define PID_PARAM_KD  0.1f
+#define PID_PARAM_KI  0.0f
+#define PID_PARAM_KD  0.0f
 
 #define LEDDRIVERAddr   (0b0100000 << 1)
 /* USER CODE END Includes */
@@ -123,6 +123,11 @@ typedef struct calcPIDdata_t_def
 	float Temps[12];
 	uint8_t Status[12];
 } calcPIDdata_t;
+
+typedef struct pidSignals_t_def
+{
+	uint8_t Signals[12];
+} pidSignals_t;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -234,7 +239,7 @@ int main(void)
 
 	/* Create the queue(s) */
 	/* definition and creation of qToHeatingTask */
-	osMessageQDef(qToHeatingTask, 4, 12);
+	osMessageQDef(qToHeatingTask, 4, pidSignals_t);
 	qToHeatingTaskHandle = osMessageCreate(osMessageQ(qToHeatingTask), NULL);
 
 	/* definition and creation of qToSaveTask */
@@ -509,10 +514,13 @@ static void MX_GPIO_Init(void)
 	HAL_GPIO_WritePin(GPIOC, LowerHeater6_Pin | UpperHeater6_Pin,
 			GPIO_PIN_RESET);
 
+	HAL_GPIO_WritePin(Button_GPIO_Port, Button_Pin, GPIO_PIN_SET);
+
 	/*Configure GPIO pin : Button_Pin */
 	GPIO_InitStruct.Pin = Button_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(Button_GPIO_Port, &GPIO_InitStruct);
 
 	/*Configure GPIO pins : LTC1_RST_Pin LTC1_CS_Pin LTC2_CS_Pin LTC3_RST_Pin
@@ -663,6 +671,7 @@ void StartSaveTask(void const * argument)
 	uint8_t UARTBuffer[128];
 	uint8_t UARTBufLen = 0;
 	saveData_t data;
+	int16_t tempToWrite[30];
 	uint8_t i2cData[3];
 	uint8_t hour = 0;
 	uint8_t minute = 0;
@@ -746,19 +755,23 @@ void StartSaveTask(void const * argument)
 			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinSetValuesKom:");
 			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
-			// If write failed send signal to watchdog task to reset the program
+			for (uint32_t i = 0; i < 30; i ++)
+			{
+				// truncate to 16 bit
+				tempToWrite[i] = (int16_t)(data.Temps[i]/10);
+			}
 			for (uint32_t i = 0; i < 30; i += 6)
 			{
 
-				SDBufLen = sprintf((char*) SDBuffer, "%ld,%ld,%ld,%ld,%ld,%ld,",
-						data.Temps[i], data.Temps[i + 1], data.Temps[i + 2],
-						data.Temps[i + 3], data.Temps[i + 4],
-						data.Temps[i + 5]);
+				SDBufLen = sprintf((char*) SDBuffer, "%d,%d,%d,%d,%d,%d,",
+						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
+						tempToWrite[i + 3], data.Temps[i + 4],
+						tempToWrite[i + 5]);
 				UARTBufLen = sprintf((char*) UARTBuffer,
-						"%s %ld,%ld,%ld,%ld,%ld,%ld\r\n", dataStrings[i / 6],
-						data.Temps[i], data.Temps[i + 1], data.Temps[i + 2],
-						data.Temps[i + 3], data.Temps[i + 4],
-						data.Temps[i + 5]);
+						"%s %d,%d,%d,%d,%d,%d\r\n", dataStrings[i / 6],
+						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
+						tempToWrite[i + 3], tempToWrite[i + 4],
+						tempToWrite[i + 5]);
 				if (UARTBufLen > 0)
 				{
 					HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
@@ -936,8 +949,7 @@ void StartWatchdogTask(void const * argument)
 void StartHeatingTask(void const * argument)
 {
 	/* USER CODE BEGIN StartHeatingTask */
-	uint8_t ControlValues[12] =
-	{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	pidSignals_t pid_signals;
 	GPIO_TypeDef * HeatingPorts[12] =
 	{
 	LowerHeater1_GPIO_Port, LowerHeater2_GPIO_Port, LowerHeater3_GPIO_Port,
@@ -950,25 +962,28 @@ void StartHeatingTask(void const * argument)
 	LowerHeater5_Pin, LowerHeater6_Pin, UpperHeater1_Pin, UpperHeater2_Pin,
 	UpperHeater3_Pin, UpperHeater4_Pin, UpperHeater5_Pin, UpperHeater6_Pin };
 
+	memset(&pid_signals, 0x00, sizeof(pid_signals));
+
 	/* Infinite loop */
 	for (;;)
 	{
 
 		// Get values from the control task, if there are any new
-		xQueueReceive(qToHeatingTaskHandle, ControlValues, 0);
+		xQueueReceive(qToHeatingTaskHandle, &pid_signals, 0);
 
 		// Lower Sample 1 heating
 		for (uint8_t i = 0; i < 12; i++)
 		{
-			if (ControlValues[i] > 0)
+			if (pid_signals.Signals[i] > 0)
 			{
 				HAL_GPIO_WritePin(HeatingPorts[i], HeatingPins[i],
 						GPIO_PIN_SET);
-				osDelay(ControlValues[i]);
+				osDelay(pid_signals.Signals[i]);
+				//osDelay(100);
 				HAL_GPIO_WritePin(HeatingPorts[i], HeatingPins[i],
 						GPIO_PIN_RESET);
 			}
-			osDelay(100 - ControlValues[i]);
+			osDelay(100 - pid_signals.Signals[i]);
 		}
 	}
 	/* USER CODE END StartHeatingTask */
@@ -987,6 +1002,8 @@ void StartControlTask(void const * argument)
 	float Temperatures[30];
 
 	saveData_t data;
+
+	pidSignals_t pid_signals;
 
 	// mean temperatures that will be used as current temperature for PID algorithms, Lower6 then Upper6
 	calcPIDdata_t CalculatedTemps;
@@ -1041,6 +1058,7 @@ void StartControlTask(void const * argument)
 					}
 				}
 			}
+			received_cnt = 0;
 		}
 		// Read LTCs, store readouts in the array
 		// To do: return status bitmask and check for errors
@@ -1225,8 +1243,12 @@ void StartControlTask(void const * argument)
 			}
 		}
 
+		for (uint8_t i = 0; i < 12; i++)
+		{
+			pid_signals.Signals[i] = data.Signals[i];
+		}
 		// Send current control to HeatingTask
-		xQueueSend(qToHeatingTaskHandle, &data.Signals, 1);
+		xQueueSend(qToHeatingTaskHandle, &pid_signals.Signals, 10);
 
 		// Send current control and temperatures to Save task
 		xQueueSend(qToSaveTaskHandle, &data, 1);
