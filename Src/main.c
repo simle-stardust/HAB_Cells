@@ -670,12 +670,14 @@ void StartSaveTask(void const * argument)
 	uint8_t SDBufLen = 0;
 	uint8_t UARTBuffer[128];
 	uint8_t UARTBufLen = 0;
+	uint8_t UARTRxBuf[16];
 	saveData_t data;
 	int16_t tempToWrite[30];
 	uint8_t i2cData[3];
 	uint8_t hour = 0;
 	uint8_t minute = 0;
 	uint8_t second = 0;
+	volatile uint8_t additionalFlags = 0;
 	uint16_t statusFlags = 0;
 	uint16_t ADC_thermal_int = 0;
 	uint16_t ADC_thermal_ext = 0;
@@ -685,6 +687,9 @@ void StartSaveTask(void const * argument)
 	memset(data.Temps, 0, sizeof(data.Temps));
 	uint32_t tick = osKernelSysTick();
 	uint32_t ltcReadoutTick = 0;
+	volatile int32_t altitude = 0;
+
+	const char Ok[] = "@MarcinOK!";
 
 	HAL_GPIO_WritePin(WiFI_CH_PD_GPIO_Port, WiFI_CH_PD_Pin, GPIO_PIN_SET);
 	HAL_GPIO_WritePin(WiFi_RST_GPIO_Port, WiFi_RST_Pin, GPIO_PIN_SET);
@@ -728,11 +733,11 @@ void StartSaveTask(void const * argument)
 			if (HAL_I2C_Mem_Read(&hi2c1, DS3231Addr, 0x00, 1, i2cData, 3, 100)
 					== HAL_OK)
 			{
-				hour = ((i2cData[0] & 0b01110000) >> 4) * 10
+				second = ((i2cData[0] & 0b01110000) >> 4) * 10
 						+ (i2cData[0] & 0b00001111);
 				minute = ((i2cData[1] & 0b01110000) >> 4) * 10
 						+ (i2cData[1] & 0b00001111);
-				second = ((i2cData[2] & 0b01110000) >> 4) * 10
+				hour = ((i2cData[2] & 0b01110000) >> 4) * 10
 						+ (i2cData[2] & 0b00001111);
 				statusFlags &= ~RTC_ERR;
 				SDBufLen = sprintf((char*) SDBuffer, "%d:%d:%d,", (int16_t) hour,
@@ -763,12 +768,12 @@ void StartSaveTask(void const * argument)
 			for (uint32_t i = 0; i < 30; i += 6)
 			{
 
-				SDBufLen = sprintf((char*) SDBuffer, "%d,%d,%d,%d,%d,%d,",
+				SDBufLen = sprintf((char*) SDBuffer, "%hd,%hd,%hd,%hd,%hd,%hd,",
 						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
-						tempToWrite[i + 3], data.Temps[i + 4],
+						tempToWrite[i + 3], tempToWrite[i + 4],
 						tempToWrite[i + 5]);
 				UARTBufLen = sprintf((char*) UARTBuffer,
-						"%s %d,%d,%d,%d,%d,%d\r\n", dataStrings[i / 6],
+						"%s %hd,%hd,%hd,%hd,%hd,%hd\r\n", dataStrings[i / 6],
 						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
 						tempToWrite[i + 3], tempToWrite[i + 4],
 						tempToWrite[i + 5]);
@@ -856,13 +861,50 @@ void StartSaveTask(void const * argument)
 			}
 
 
-			SDBufLen = sprintf((char*) SDBuffer, "%d!\r\n",
+			SDBufLen = sprintf((char*) SDBuffer, "%hu!\r\n",
 					(int16_t) statusFlags);
 			if (SDBufLen > 0)
 			{
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
 
+			if (HAL_UART_Receive(&huart1, UARTRxBuf, 10, 500) != HAL_TIMEOUT)
+			{
+				// data from WiFi received
+				if (strstr((char*)UARTRxBuf, Ok) != NULL)
+				{
+					additionalFlags &= ~ADDITIONAL_FLAGS_WIFI_ERR;
+				}
+				else
+				{
+					additionalFlags |= ADDITIONAL_FLAGS_WIFI_ERR;
+				}
+			}
+			else
+			{
+				// data from WiFi not received
+				additionalFlags |= ADDITIONAL_FLAGS_WIFI_ERR;
+			}
+
+
+
+
+			SDBufLen = sprintf((char*) SDBuffer, "@MarcinGetWysokosc!\r\n");
+			if (SDBufLen > 0)
+			{
+				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+			}
+
+			if (HAL_UART_Receive(&huart1, UARTRxBuf, 4, 500) != HAL_TIMEOUT)
+			{
+				altitude = (int32_t)(((uint32_t)UARTRxBuf[0] << 24) + ((uint32_t)UARTRxBuf[1] << 16) + ((uint32_t)UARTRxBuf[2] << 8) + (UARTRxBuf[3]));
+				additionalFlags &= ~ADDITIONAL_FLAGS_WIFI_ERR;
+			}
+			else
+			{
+				// data from WiFi not received
+				additionalFlags |= ADDITIONAL_FLAGS_WIFI_ERR;
+			}
 		}
 
 		/* print received characters count

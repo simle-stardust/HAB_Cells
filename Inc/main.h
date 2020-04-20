@@ -140,6 +140,9 @@
 
 #define LOOP_CLEAR_MASK     (uint16_t)0x8000
 
+#define ADDITIONAL_FLAGS_WIFI_ERR  (uint8_t)0x08
+
+
 
 static const char error_strings[17][17] = {"TEMP1_DN_OK", "TEMP2_DN_OK","TEMP3_DN_OK",
 		"TEMP4_DN_OK","TEMP5_DN_OK","TEMP6_DN_OK","TEMP1_UP_OK",
