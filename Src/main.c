@@ -66,6 +66,9 @@
 #define PID_PARAM_KD  0.0f
 
 #define LEDDRIVERAddr   (0b0100000 << 1)
+
+#define UART_DEBUG huart3
+#define UART_WIFI huart1
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
@@ -78,8 +81,14 @@ HAL_SD_CardInfoTypedef SDCardInfo;
 
 SPI_HandleTypeDef hspi1;
 
+TIM_HandleTypeDef htim6;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart1_tx;
+DMA_HandleTypeDef hdma_usart3_rx;
+DMA_HandleTypeDef hdma_usart3_tx;
 
 osThreadId SaveTaskHandle;
 osThreadId WatchdogTaskHandle;
@@ -100,32 +109,29 @@ UINT my_error;
 uint8_t received_char = 0;
 volatile uint8_t received_cnt = 0;
 volatile uint8_t flag_PID_changed = 0;
+
 uint8_t received_buf[128];
 
 volatile float received_kp = PID_PARAM_KP;
 volatile float received_ki = PID_PARAM_KI;
 volatile float received_kd = PID_PARAM_KD;
 
-const char* const dataStrings[] =
-{ "Upper Sample: ", "Lower Sample: ", "Upper Heater: ", "Lower Heater: ",
-		"Ambient: " };
-char initMessage[] = "\r\nRESET\r\n";
+const char* const dataStrings[] = { "Upper Sample: ", "Lower Sample: ",
+		"Upper Heater: ", "Lower Heater: ", "Ambient: " };
+uint8_t initMessage[] = "\r\nRESET\r\n";
 
-typedef struct saveData_t_def
-{
+typedef struct saveData_t_def {
 	int32_t Temps[30];
 	uint8_t LTCStatusMask[6];
 	uint8_t Signals[12];
 } saveData_t;
 
-typedef struct calcPIDdata_t_def
-{
+typedef struct calcPIDdata_t_def {
 	float Temps[12];
 	uint8_t Status[12];
 } calcPIDdata_t;
 
-typedef struct pidSignals_t_def
-{
+typedef struct pidSignals_t_def {
 	uint8_t Signals[12];
 } pidSignals_t;
 /* USER CODE END PV */
@@ -133,12 +139,14 @@ typedef struct pidSignals_t_def
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC_Init(void);
-static void MX_SDIO_SD_Init(void);
-static void MX_USART1_UART_Init(void);
-static void MX_SPI1_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_SDIO_SD_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_USART1_UART_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_TIM6_Init(void);
 void StartSaveTask(void const * argument);
 void StartWatchdogTask(void const * argument);
 void StartHeatingTask(void const * argument);
@@ -146,30 +154,26 @@ void StartControlTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-	if (huart->Instance == USART3)
-	{
-		if (received_cnt < sizeof(received_buf) - 1)
-		{
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART3) {
+		if (received_cnt < sizeof(received_buf) - 1) {
 			received_buf[received_cnt++] = received_char;
 		}
-		if (received_char == '\r')
-		{
+		if (received_char == '\r') {
 			received_buf[received_cnt - 1] = '\0';
 			xQueueSendFromISR(qFromUartDebugHandle, &received_char, NULL);
 		}
 		HAL_UART_Receive_IT(&huart3, &received_char, 1);
 	}
 }
+
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
 
 /* USER CODE END 0 */
 
-int main(void)
-{
+int main(void) {
 
 	/* USER CODE BEGIN 1 */
 
@@ -193,12 +197,14 @@ int main(void)
 
 	/* Initialize all configured peripherals */
 	MX_GPIO_Init();
+	MX_DMA_Init();
 	MX_ADC_Init();
-	MX_SDIO_SD_Init();
-	MX_USART1_UART_Init();
-	MX_SPI1_Init();
 	MX_I2C1_Init();
+	MX_SDIO_SD_Init();
+	MX_SPI1_Init();
+	MX_USART1_UART_Init();
 	MX_USART3_UART_Init();
+	MX_TIM6_Init();
 
 	/* USER CODE BEGIN 2 */
 
@@ -250,7 +256,7 @@ int main(void)
 	osMessageQDef(qToWatchdogTask, 5, uint8_t);
 	qToWatchdogTaskHandle = osMessageCreate(osMessageQ(qToWatchdogTask), NULL);
 
-	/* definition and creation of qFromUartDebugHandle */
+	/* definition and creation of qFromUartDebug */
 	osMessageQDef(qFromUartDebug, 1, uint8_t);
 	qFromUartDebugHandle = osMessageCreate(osMessageQ(qFromUartDebug), NULL);
 
@@ -265,8 +271,7 @@ int main(void)
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
-	while (1)
-	{
+	while (1) {
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
@@ -278,8 +283,7 @@ int main(void)
 
 /** System Clock Configuration
  */
-void SystemClock_Config(void)
-{
+void SystemClock_Config(void) {
 
 	RCC_OscInitTypeDef RCC_OscInitStruct;
 	RCC_ClkInitTypeDef RCC_ClkInitStruct;
@@ -297,8 +301,7 @@ void SystemClock_Config(void)
 	RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
 	RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL6;
 	RCC_OscInitStruct.PLL.PLLDIV = RCC_PLL_DIV3;
-	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-	{
+	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
@@ -311,8 +314,7 @@ void SystemClock_Config(void)
 	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
 	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
-	{
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
@@ -329,8 +331,7 @@ void SystemClock_Config(void)
 }
 
 /* ADC init function */
-static void MX_ADC_Init(void)
-{
+static void MX_ADC_Init(void) {
 
 	ADC_ChannelConfTypeDef sConfig;
 
@@ -351,8 +352,7 @@ static void MX_ADC_Init(void)
 	hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
 	hadc.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
 	hadc.Init.DMAContinuousRequests = DISABLE;
-	if (HAL_ADC_Init(&hadc) != HAL_OK)
-	{
+	if (HAL_ADC_Init(&hadc) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
@@ -361,16 +361,14 @@ static void MX_ADC_Init(void)
 	sConfig.Channel = ADC_CHANNEL_10;
 	sConfig.Rank = 1;
 	sConfig.SamplingTime = ADC_SAMPLETIME_4CYCLES;
-	if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-	{
+	if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
 }
 
 /* I2C1 init function */
-static void MX_I2C1_Init(void)
-{
+static void MX_I2C1_Init(void) {
 
 	hi2c1.Instance = I2C1;
 	hi2c1.Init.ClockSpeed = 100000;
@@ -381,16 +379,14 @@ static void MX_I2C1_Init(void)
 	hi2c1.Init.OwnAddress2 = 0;
 	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
 	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-	if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-	{
+	if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
 }
 
 /* SDIO init function */
-static void MX_SDIO_SD_Init(void)
-{
+static void MX_SDIO_SD_Init(void) {
 
 	hsd.Instance = SDIO;
 	hsd.Init.ClockEdge = SDIO_CLOCK_EDGE_RISING;
@@ -403,8 +399,7 @@ static void MX_SDIO_SD_Init(void)
 }
 
 /* SPI1 init function */
-static void MX_SPI1_Init(void)
-{
+static void MX_SPI1_Init(void) {
 
 	hspi1.Instance = SPI1;
 	hspi1.Init.Mode = SPI_MODE_MASTER;
@@ -418,16 +413,36 @@ static void MX_SPI1_Init(void)
 	hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
 	hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
 	hspi1.Init.CRCPolynomial = 10;
-	if (HAL_SPI_Init(&hspi1) != HAL_OK)
-	{
+	if (HAL_SPI_Init(&hspi1) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+
+}
+
+/* TIM6 init function */
+static void MX_TIM6_Init(void) {
+
+	TIM_MasterConfigTypeDef sMasterConfig;
+
+	htim6.Instance = TIM6;
+	htim6.Init.Prescaler = 32;
+	htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim6.Init.Period = 104;
+	if (HAL_TIM_Base_Init(&htim6) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+
+	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+	if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig)
+			!= HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
 }
 
 /* USART1 init function */
-static void MX_USART1_UART_Init(void)
-{
+static void MX_USART1_UART_Init(void) {
 
 	huart1.Instance = USART1;
 	huart1.Init.BaudRate = 115200;
@@ -437,16 +452,14 @@ static void MX_USART1_UART_Init(void)
 	huart1.Init.Mode = UART_MODE_TX_RX;
 	huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
 	huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-	if (HAL_UART_Init(&huart1) != HAL_OK)
-	{
+	if (HAL_UART_Init(&huart1) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
 }
 
 /* USART3 init function */
-static void MX_USART3_UART_Init(void)
-{
+static void MX_USART3_UART_Init(void) {
 
 	huart3.Instance = USART3;
 	huart3.Init.BaudRate = 115200;
@@ -456,10 +469,33 @@ static void MX_USART3_UART_Init(void)
 	huart3.Init.Mode = UART_MODE_TX_RX;
 	huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
 	huart3.Init.OverSampling = UART_OVERSAMPLING_16;
-	if (HAL_UART_Init(&huart3) != HAL_OK)
-	{
+	if (HAL_UART_Init(&huart3) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
+
+}
+
+/** 
+ * Enable DMA controller clock
+ */
+static void MX_DMA_Init(void) {
+	/* DMA controller clock enable */
+	__HAL_RCC_DMA1_CLK_ENABLE()
+	;
+
+	/* DMA interrupt init */
+	/* DMA1_Channel2_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+	/* DMA1_Channel3_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+	/* DMA1_Channel4_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+	/* DMA1_Channel5_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
@@ -470,8 +506,7 @@ static void MX_USART3_UART_Init(void)
  * EVENT_OUT
  * EXTI
  */
-static void MX_GPIO_Init(void)
-{
+static void MX_GPIO_Init(void) {
 
 	GPIO_InitTypeDef GPIO_InitStruct;
 
@@ -484,6 +519,10 @@ static void MX_GPIO_Init(void)
 	;
 	__HAL_RCC_GPIOD_CLK_ENABLE()
 	;
+
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(GPIOC, Buzzer_Pin | LowerHeater6_Pin | UpperHeater6_Pin,
+			GPIO_PIN_RESET);
 
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOC,
@@ -510,22 +549,10 @@ static void MX_GPIO_Init(void)
 	HAL_GPIO_WritePin(GPIOB, LTC4_CS_Pin | LTC4_RST_Pin | LTC5_CS_Pin,
 			GPIO_PIN_SET);
 
-	/*Configure GPIO pin Output Level */
-	HAL_GPIO_WritePin(GPIOC, LowerHeater6_Pin | UpperHeater6_Pin,
-			GPIO_PIN_RESET);
-
-	HAL_GPIO_WritePin(Button_GPIO_Port, Button_Pin, GPIO_PIN_SET);
-
-	/*Configure GPIO pin : Button_Pin */
-	GPIO_InitStruct.Pin = Button_Pin;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(Button_GPIO_Port, &GPIO_InitStruct);
-
-	/*Configure GPIO pins : LTC1_RST_Pin LTC1_CS_Pin LTC2_CS_Pin LTC3_RST_Pin
-	 LTC3_CS_Pin LowerHeater6_Pin UpperHeater6_Pin LTC5_RST_Pin */
-	GPIO_InitStruct.Pin = LTC1_RST_Pin | LTC1_CS_Pin | LTC2_CS_Pin
+	/*Configure GPIO pins : Buzzer_Pin LTC1_RST_Pin LTC1_CS_Pin LTC2_CS_Pin
+	 LTC3_RST_Pin LTC3_CS_Pin LowerHeater6_Pin UpperHeater6_Pin
+	 LTC5_RST_Pin */
+	GPIO_InitStruct.Pin = Buzzer_Pin | LTC1_RST_Pin | LTC1_CS_Pin | LTC2_CS_Pin
 			| LTC3_RST_Pin | LTC3_CS_Pin | LowerHeater6_Pin | UpperHeater6_Pin
 			| LTC5_RST_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -558,8 +585,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-static uint16_t WriteToSD(uint8_t* buf, uint8_t len)
-{
+static uint16_t WriteToSD(uint8_t* buf, uint8_t len) {
 	char my_file_name[20];
 	static uint8_t datalogNum = 0;
 	uint16_t returnCode = 0;
@@ -572,36 +598,28 @@ static uint16_t WriteToSD(uint8_t* buf, uint8_t len)
 	fresult = f_open(&my_file, my_file_name, FA_WRITE | FA_OPEN_ALWAYS);
 	fileSize = f_size(&my_file);
 	fresult = f_close(&my_file);
-	if (fileSize > 1000000)
-	{
+	if (fileSize > 1000000) {
 		datalogNum++;
 		sprintf(my_file_name, "cells%d.txt", datalogNum);
 		// reset file object
 		memset(&my_file, 0x00, sizeof(my_file));
-		fileSize  = 0;
+		fileSize = 0;
 	}
 	__enable_irq();
 	__disable_irq();
 	fresult = f_open(&my_file, my_file_name, FA_WRITE | FA_OPEN_ALWAYS);
-	if (fresult == FR_OK)
-	{
+	if (fresult == FR_OK) {
 		fresult = f_lseek(&my_file, fileSize);
 		fresult = f_write(&my_file, buf, len, &my_error);
-		if (fresult == FR_OK)
-		{
+		if (fresult == FR_OK) {
 			fresult = f_close(&my_file);
-			if (fresult != FR_OK)
-			{
+			if (fresult != FR_OK) {
 				returnCode = SD_ERR;
 			}
-		}
-		else
-		{
+		} else {
 			returnCode = SD_ERR;
 		}
-	}
-	else
-	{
+	} else {
 		returnCode = SD_ERR;
 	}
 	__enable_irq();
@@ -609,8 +627,7 @@ static uint16_t WriteToSD(uint8_t* buf, uint8_t len)
 	return returnCode;
 }
 
-void arm_pid_init_f32(arm_pid_instance_f32 * S, int32_t resetStateFlag)
-{
+void arm_pid_init_f32(arm_pid_instance_f32 * S, int32_t resetStateFlag) {
 
 	/* Derived coefficient A0 */
 	S->A0 = S->Kp + S->Ki + S->Kd;
@@ -622,20 +639,17 @@ void arm_pid_init_f32(arm_pid_instance_f32 * S, int32_t resetStateFlag)
 	S->A2 = S->Kd;
 
 	/* Check whether state needs reset or not */
-	if (resetStateFlag)
-	{
+	if (resetStateFlag) {
 		/* Clear the state buffer.  The size will be always 3 samples */
 		memset(S->state, 0, 3u * sizeof(float32_t));
 	}
 
 }
 
-uint16_t ReadADC(uint8_t adcnum)
-{
+uint16_t ReadADC(uint8_t adcnum) {
 	ADC_ChannelConfTypeDef adc_ch;
 
-	switch (adcnum)
-	{
+	switch (adcnum) {
 	case 0:
 		adc_ch.Channel = ADC_CHANNEL_10;
 		break;
@@ -660,8 +674,7 @@ uint16_t ReadADC(uint8_t adcnum)
 /* USER CODE END 4 */
 
 /* StartSaveTask function */
-void StartSaveTask(void const * argument)
-{
+void StartSaveTask(void const * argument) {
 	/* init code for FATFS */
 	MX_FATFS_Init();
 
@@ -698,15 +711,17 @@ void StartSaveTask(void const * argument)
 
 	f_mount(&my_fatfs, SD_Path, 1);
 	statusFlags |= WriteToSD((uint8_t*) initMessage, sizeof(initMessage));
-	HAL_UART_Transmit(&huart3, (char*)initMessage, sizeof(initMessage), 100);
+
+	//HAL_UART_Transmit_IT(&huart3, initMessage, sizeof(initMessage));
+
 	memset(SDBuffer, 0, sizeof(SDBuffer));
+
 	/* Infinite loop */
-	for (;;)
-	{
+	for (;;) {
+
 		tick = osKernelSysTick();
 		statusFlags &= LOOP_CLEAR_MASK;
-		if (flag_PID_changed)
-		{
+		if (flag_PID_changed) {
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"PID changed, P= %ld, I= %ld, D= %ld\r\n",
 					(int32_t) (received_kp * 100.0f),
@@ -717,22 +732,18 @@ void StartSaveTask(void const * argument)
 		}
 
 		// Fetch values from all other tasks
-		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE)
-		{
+		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE) {
 			// Write to SD and WiFi
 			ltcReadoutTick = osKernelSysTick();
-
 
 			ADC_thermal_int = ReadADC(0);
 			ADC_ele = ReadADC(1);
 			ADC_thermal_ext = ReadADC(2);
 
-
 			// Read RTC
 			memset(i2cData, 0, sizeof(i2cData));
 			if (HAL_I2C_Mem_Read(&hi2c1, DS3231Addr, 0x00, 1, i2cData, 3, 100)
-					== HAL_OK)
-			{
+					== HAL_OK) {
 				second = ((i2cData[0] & 0b01110000) >> 4) * 10
 						+ (i2cData[0] & 0b00001111);
 				minute = ((i2cData[1] & 0b01110000) >> 4) * 10
@@ -740,17 +751,14 @@ void StartSaveTask(void const * argument)
 				hour = ((i2cData[2] & 0b01110000) >> 4) * 10
 						+ (i2cData[2] & 0b00001111);
 				statusFlags &= ~RTC_ERR;
-				SDBufLen = sprintf((char*) SDBuffer, "%d:%d:%d,", (int16_t) hour,
-						(int16_t) minute, (int16_t) second);
-			}
-			else
-			{
+				SDBufLen = sprintf((char*) SDBuffer, "%d:%d:%d,",
+						(int16_t) hour, (int16_t) minute, (int16_t) second);
+			} else {
 				statusFlags |= RTC_ERR;
 				SDBufLen = sprintf((char*) SDBuffer, "00:00:00,");
 			}
 
-			if (SDBufLen > 0)
-			{
+			if (SDBufLen > 0) {
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 			}
 
@@ -760,13 +768,11 @@ void StartSaveTask(void const * argument)
 			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinSetValuesKom:");
 			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
-			for (uint32_t i = 0; i < 30; i ++)
-			{
+			for (uint32_t i = 0; i < 30; i++) {
 				// truncate to 16 bit
-				tempToWrite[i] = (int16_t)(data.Temps[i]/10);
+				tempToWrite[i] = (int16_t) (data.Temps[i] / 10);
 			}
-			for (uint32_t i = 0; i < 30; i += 6)
-			{
+			for (uint32_t i = 0; i < 30; i += 6) {
 
 				SDBufLen = sprintf((char*) SDBuffer, "%hd,%hd,%hd,%hd,%hd,%hd,",
 						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
@@ -777,12 +783,10 @@ void StartSaveTask(void const * argument)
 						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
 						tempToWrite[i + 3], tempToWrite[i + 4],
 						tempToWrite[i + 5]);
-				if (UARTBufLen > 0)
-				{
+				if (UARTBufLen > 0) {
 					HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 				}
-				if (SDBufLen > 0)
-				{
+				if (SDBufLen > 0) {
 					statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 					HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 				}
@@ -795,12 +799,10 @@ void StartSaveTask(void const * argument)
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
 					data.Signals[0], data.Signals[1], data.Signals[2],
 					data.Signals[3], data.Signals[4], data.Signals[5]);
-			if (UARTBufLen > 0)
-			{
+			if (UARTBufLen > 0) {
 				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			}
-			if (SDBufLen > 0)
-			{
+			if (SDBufLen > 0) {
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
@@ -811,12 +813,10 @@ void StartSaveTask(void const * argument)
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
-			if (UARTBufLen > 0)
-			{
+			if (UARTBufLen > 0) {
 				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			}
-			if (SDBufLen > 0)
-			{
+			if (SDBufLen > 0) {
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
@@ -828,8 +828,7 @@ void StartSaveTask(void const * argument)
 							data.LTCStatusMask[2], data.LTCStatusMask[3],
 							data.LTCStatusMask[4], data.LTCStatusMask[5],
 							statusFlags);
-			if (UARTBufLen > 0)
-			{
+			if (UARTBufLen > 0) {
 				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			}
 
@@ -838,8 +837,7 @@ void StartSaveTask(void const * argument)
 					data.LTCStatusMask[0], data.LTCStatusMask[1],
 					data.LTCStatusMask[2], data.LTCStatusMask[3],
 					data.LTCStatusMask[4], data.LTCStatusMask[5], statusFlags);
-			if (SDBufLen > 0)
-			{
+			if (SDBufLen > 0) {
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 			}
 
@@ -847,64 +845,52 @@ void StartSaveTask(void const * argument)
 					sprintf((char*) UARTBuffer,
 							"ADC Thermal internal: %u\r\nADC Thermal external: %u\r\nADC Ele: %u\r\n",
 							ADC_thermal_int, ADC_thermal_ext, ADC_ele);
-			if (UARTBufLen > 0)
-			{
+			if (UARTBufLen > 0) {
 				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
 			}
 
-			SDBufLen = sprintf((char*) SDBuffer,
-					"%u,%u,%u\r\n",
+			SDBufLen = sprintf((char*) SDBuffer, "%u,%u,%u\r\n",
 					ADC_thermal_int, ADC_thermal_ext, ADC_ele);
-			if (SDBufLen > 0)
-			{
+			if (SDBufLen > 0) {
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 			}
 
-
 			SDBufLen = sprintf((char*) SDBuffer, "%hu!\r\n",
 					(int16_t) statusFlags);
-			if (SDBufLen > 0)
-			{
+			if (SDBufLen > 0) {
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
 
-			if (HAL_UART_Receive(&huart1, UARTRxBuf, 10, 500) != HAL_TIMEOUT)
-			{
+			if (HAL_UART_Receive(&huart1, UARTRxBuf, 10, 100) != HAL_TIMEOUT) {
 				// data from WiFi received
-				if (strstr((char*)UARTRxBuf, Ok) != NULL)
-				{
+				if (strstr((char*) UARTRxBuf, Ok) != NULL) {
 					additionalFlags &= ~ADDITIONAL_FLAGS_WIFI_ERR;
-				}
-				else
-				{
+				} else {
 					additionalFlags |= ADDITIONAL_FLAGS_WIFI_ERR;
 				}
-			}
-			else
-			{
+			} else {
 				// data from WiFi not received
 				additionalFlags |= ADDITIONAL_FLAGS_WIFI_ERR;
 			}
 
-
-
-
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinGetWysokosc!\r\n");
-			if (SDBufLen > 0)
-			{
+			if (SDBufLen > 0) {
 				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
 			}
 
-			if (HAL_UART_Receive(&huart1, UARTRxBuf, 4, 500) != HAL_TIMEOUT)
-			{
-				altitude = (int32_t)(((uint32_t)UARTRxBuf[0] << 24) + ((uint32_t)UARTRxBuf[1] << 16) + ((uint32_t)UARTRxBuf[2] << 8) + (UARTRxBuf[3]));
+			if (HAL_UART_Receive(&huart1, UARTRxBuf, 4, 100) != HAL_TIMEOUT) {
+				altitude = (int32_t) (((uint32_t) UARTRxBuf[0] << 24)
+						+ ((uint32_t) UARTRxBuf[1] << 16)
+						+ ((uint32_t) UARTRxBuf[2] << 8) + (UARTRxBuf[3]));
 				additionalFlags &= ~ADDITIONAL_FLAGS_WIFI_ERR;
-			}
-			else
-			{
+			} else {
 				// data from WiFi not received
 				additionalFlags |= ADDITIONAL_FLAGS_WIFI_ERR;
 			}
+
+			// if flag from wifi get enable buzzer
+			//HAL_TIM_Base_Start_IT(&htim6);
+
 		}
 
 		/* print received characters count
@@ -915,33 +901,23 @@ void StartSaveTask(void const * argument)
 		 }
 		 */
 
-		if (tick - ltcReadoutTick > 15 * configTICK_RATE_HZ)
-		{
+		if (tick - ltcReadoutTick > 15 * configTICK_RATE_HZ) {
 			statusFlags |= LTC_ERR;
-		}
-		else
-		{
+		} else {
 			statusFlags &= ~LTC_ERR;
 		}
 
-		for (uint32_t i = 0; i < 12; i++)
-		{
-			if ((data.Temps[i] < 37000) && (data.Temps[i] > 35000))
-			{
+		for (uint32_t i = 0; i < 12; i++) {
+			if ((data.Temps[i] < 37000) && (data.Temps[i] > 35000)) {
 				statusFlags |= (1 << i);
-			}
-			else
-			{
+			} else {
 				statusFlags &= ~(1 << i);
 			}
 		}
 
-		if (statusFlags & SD_ERR)
-		{
+		if (statusFlags & SD_ERR) {
 			dataToWatchdog = 1;
-		}
-		else
-		{
+		} else {
 			dataToWatchdog = 0;
 		}
 		xQueueSend(qToWatchdogTaskHandle, &dataToWatchdog, 10);
@@ -959,8 +935,7 @@ void StartSaveTask(void const * argument)
 }
 
 /* StartWatchdogTask function */
-void StartWatchdogTask(void const * argument)
-{
+void StartWatchdogTask(void const * argument) {
 	/* USER CODE BEGIN StartWatchdogTask */
 	uint8_t message = 0;
 	RCC->CSR |= (1 << 0);                  // LSI enable, necessary for IWDG
@@ -971,15 +946,11 @@ void StartWatchdogTask(void const * argument)
 	IWDG->RLR = 0x00000FFF;
 	IWDG->KR = 0xCCCC;
 	/* Infinite loop */
-	for (;;)
-	{
+	for (;;) {
 		xQueueReceive(qToWatchdogTaskHandle, &message, 10);
-		if (message != 0)
-		{
+		if (message != 0) {
 			osDelay(30000);
-		}
-		else
-		{
+		} else {
 			IWDG->KR = 0xAAAA;
 		}
 		osDelay(1000);
@@ -988,18 +959,15 @@ void StartWatchdogTask(void const * argument)
 }
 
 /* StartHeatingTask function */
-void StartHeatingTask(void const * argument)
-{
+void StartHeatingTask(void const * argument) {
 	/* USER CODE BEGIN StartHeatingTask */
 	pidSignals_t pid_signals;
-	GPIO_TypeDef * HeatingPorts[12] =
-	{
+	GPIO_TypeDef * HeatingPorts[12] = {
 	LowerHeater1_GPIO_Port, LowerHeater2_GPIO_Port, LowerHeater3_GPIO_Port,
 	LowerHeater4_GPIO_Port, LowerHeater5_GPIO_Port, LowerHeater6_GPIO_Port,
 	UpperHeater1_GPIO_Port, UpperHeater2_GPIO_Port, UpperHeater3_GPIO_Port,
 	UpperHeater4_GPIO_Port, UpperHeater5_GPIO_Port, UpperHeater6_GPIO_Port };
-	uint16_t HeatingPins[12] =
-	{
+	uint16_t HeatingPins[12] = {
 	LowerHeater1_Pin, LowerHeater2_Pin, LowerHeater3_Pin, LowerHeater4_Pin,
 	LowerHeater5_Pin, LowerHeater6_Pin, UpperHeater1_Pin, UpperHeater2_Pin,
 	UpperHeater3_Pin, UpperHeater4_Pin, UpperHeater5_Pin, UpperHeater6_Pin };
@@ -1007,17 +975,14 @@ void StartHeatingTask(void const * argument)
 	memset(&pid_signals, 0x00, sizeof(pid_signals));
 
 	/* Infinite loop */
-	for (;;)
-	{
+	for (;;) {
 
 		// Get values from the control task, if there are any new
 		xQueueReceive(qToHeatingTaskHandle, &pid_signals, 0);
 
 		// Lower Sample 1 heating
-		for (uint8_t i = 0; i < 12; i++)
-		{
-			if (pid_signals.Signals[i] > 0)
-			{
+		for (uint8_t i = 0; i < 12; i++) {
+			if (pid_signals.Signals[i] > 0) {
 				HAL_GPIO_WritePin(HeatingPorts[i], HeatingPins[i],
 						GPIO_PIN_SET);
 				osDelay(pid_signals.Signals[i]);
@@ -1032,8 +997,7 @@ void StartHeatingTask(void const * argument)
 }
 
 /* StartControlTask function */
-void StartControlTask(void const * argument)
-{
+void StartControlTask(void const * argument) {
 	/* USER CODE BEGIN StartControlTask */
 
 	uint8_t uart_char = 0;
@@ -1056,8 +1020,7 @@ void StartControlTask(void const * argument)
 	/* ARM PID Instance, float_32 format */
 	arm_pid_instance_f32 PID[12];
 
-	for (uint32_t i = 0; i < 12; i++)
-	{
+	for (uint32_t i = 0; i < 12; i++) {
 		PID[i].Kp = PID_PARAM_KP; /* Proporcional */
 		PID[i].Ki = PID_PARAM_KI; /* Integral */
 		PID[i].Kd = PID_PARAM_KD; /* Derivative */
@@ -1071,26 +1034,21 @@ void StartControlTask(void const * argument)
 	HAL_UART_Receive_IT(&huart3, &received_char, 1);
 
 	/* Infinite loop */
-	for (;;)
-	{
+	for (;;) {
 		// check if data on UART was received
-		if (xQueueReceive(qFromUartDebugHandle, &uart_char, 0) == pdTRUE)
-		{
+		if (xQueueReceive(qFromUartDebugHandle, &uart_char, 0) == pdTRUE) {
 			// "\r" sign was received from UART?
-			if (uart_char == '\r')
-			{
+			if (uart_char == '\r') {
 				// check if a valid command has been received
 				if (sscanf((char*) received_buf,
 						"P%" SCNd32 ",I%" SCNd32 ",D%" SCNd32, &received_kp_int,
-						&received_ki_int, &received_kd_int) == 3)
-				{
+						&received_ki_int, &received_kd_int) == 3) {
 					// three arguments received, assign them and reinit PID
 					received_kp = ((float) received_kp_int) / 100.0f;
 					received_ki = ((float) received_ki_int) / 100.0f;
 					received_kd = ((float) received_kd_int) / 100.0f;
 
-					for (uint32_t i = 0; i < 12; i++)
-					{
+					for (uint32_t i = 0; i < 12; i++) {
 						PID[i].Kp = received_kp; /* Proporcional */
 						PID[i].Ki = received_ki; /* Integral */
 						PID[i].Kd = received_kd; /* Derivative */
@@ -1119,149 +1077,106 @@ void StartControlTask(void const * argument)
 		data.LTCStatusMask[5] = ReadLTCs(&Temperatures[25], 5);
 
 		// first lower samples, 0.9 * sample + 0.1 * heater
-		if (!(data.LTCStatusMask[0] & 0x02))
-		{
+		if (!(data.LTCStatusMask[0] & 0x02)) {
 			// update calculated temps only if measurement is valid
 			CalculatedTemps.Temps[0] = Temperatures[1]; //+ Temperatures[3];
 			CalculatedTemps.Status[0] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[0] = 1;
 		}
 
-		if (!(data.LTCStatusMask[1] & 0x02))
-		{
+		if (!(data.LTCStatusMask[1] & 0x02)) {
 			CalculatedTemps.Temps[1] = Temperatures[6]; //+ 0.1f * Temperatures[8];
 			CalculatedTemps.Status[1] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[1] = 1;
 		}
 
-		if (!(data.LTCStatusMask[2] & 0x02))
-		{
+		if (!(data.LTCStatusMask[2] & 0x02)) {
 			CalculatedTemps.Temps[2] = Temperatures[11]; //+ 0.1f * Temperatures[13];
 			CalculatedTemps.Status[2] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[2] = 1;
 		}
 
-		if (!(data.LTCStatusMask[3] & 0x02))
-		{
+		if (!(data.LTCStatusMask[3] & 0x02)) {
 			CalculatedTemps.Temps[3] = Temperatures[16]; //+ 0.1f * Temperatures[18];
 			CalculatedTemps.Status[3] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[3] = 1;
 		}
 
-		if (!(data.LTCStatusMask[4] & 0x02))
-		{
+		if (!(data.LTCStatusMask[4] & 0x02)) {
 			CalculatedTemps.Temps[4] = Temperatures[21]; //+ 0.1f * Temperatures[23];
 			CalculatedTemps.Status[4] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[4] = 1;
 		}
 
-		if (!(data.LTCStatusMask[5] & 0x02))
-		{
+		if (!(data.LTCStatusMask[5] & 0x02)) {
 			CalculatedTemps.Temps[5] = Temperatures[26]; //+ 0.1f * Temperatures[28];
 			CalculatedTemps.Status[5] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[5] = 1;
 		}
 
 		// then upper samples
-		if (!(data.LTCStatusMask[0] & 0x01))
-		{
+		if (!(data.LTCStatusMask[0] & 0x01)) {
 			CalculatedTemps.Temps[6] = Temperatures[0]; //+ Temperatures[2];
 			CalculatedTemps.Status[6] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[6] = 1;
 		}
 
-		if (!(data.LTCStatusMask[1] & 0x01))
-		{
+		if (!(data.LTCStatusMask[1] & 0x01)) {
 			CalculatedTemps.Temps[7] = Temperatures[5]; //+ Temperatures[7];
 			CalculatedTemps.Status[7] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[7] = 1;
 		}
 
-		if (!(data.LTCStatusMask[2] & 0x01))
-		{
+		if (!(data.LTCStatusMask[2] & 0x01)) {
 			CalculatedTemps.Temps[8] = Temperatures[10]; //+ Temperatures[12];
 			CalculatedTemps.Status[8] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[8] = 1;
 		}
 
-		if (!(data.LTCStatusMask[3] & 0x01))
-		{
+		if (!(data.LTCStatusMask[3] & 0x01)) {
 			CalculatedTemps.Temps[9] = Temperatures[15]; //+ Temperatures[17];
 			CalculatedTemps.Status[9] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[9] = 1;
 		}
 
-		if (!(data.LTCStatusMask[4] & 0x01))
-		{
+		if (!(data.LTCStatusMask[4] & 0x01)) {
 			CalculatedTemps.Temps[10] = Temperatures[20]; //+ Temperatures[22];
 			CalculatedTemps.Status[10] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[10] = 1;
 		}
 
-		if (!(data.LTCStatusMask[5] & 0x01))
-		{
+		if (!(data.LTCStatusMask[5] & 0x01)) {
 			CalculatedTemps.Temps[11] = Temperatures[25]; //+ Temperatures[27];
 			CalculatedTemps.Status[11] = 0;
-		}
-		else
-		{
+		} else {
 			CalculatedTemps.Status[11] = 1;
 		}
 
-		for (uint32_t i = 0; i < 12; i++)
-		{
+		for (uint32_t i = 0; i < 12; i++) {
 			// PID calculations now
 
 			// only perform calculations if calculatedtemps status is valid
-			if (CalculatedTemps.Status[i] != 1)
-			{
+			if (CalculatedTemps.Status[i] != 1) {
 				ControlSignals[i] = arm_pid_f32(&PID[i],
 				SET_TEMPERATURE - CalculatedTemps.Temps[i]);
 
-				if (ControlSignals[i] > 100.0f)
-				{
+				if (ControlSignals[i] > 100.0f) {
 					ControlSignals[i] = 100.0f;
-				}
-				else if (ControlSignals[i] < 0.0f)
-				{
+				} else if (ControlSignals[i] < 0.0f) {
 					ControlSignals[i] = 0.0f;
 				}
-			}
-			else
-			{
+			} else {
 				ControlSignals[i] = 0.0f;
 			}
 
@@ -1269,10 +1184,8 @@ void StartControlTask(void const * argument)
 			data.Signals[i] = (uint8_t) ControlSignals[i];
 		}
 
-		for (uint32_t i = 0; i < 5; i++)
-		{
-			for (uint32_t j = 0; j < 6; j++)
-			{
+		for (uint32_t i = 0; i < 5; i++) {
+			for (uint32_t j = 0; j < 6; j++) {
 				// Fill table in sequence:
 				// UPPER_SAMPLE_CHANNEL1,2,3,4,5,6
 				// LOWER_SAMPLE_CHANNEL1,2,3,4,5,6
@@ -1285,8 +1198,7 @@ void StartControlTask(void const * argument)
 			}
 		}
 
-		for (uint8_t i = 0; i < 12; i++)
-		{
+		for (uint8_t i = 0; i < 12; i++) {
 			pid_signals.Signals[i] = data.Signals[i];
 		}
 		// Send current control to HeatingTask
@@ -1308,13 +1220,11 @@ void StartControlTask(void const * argument)
  * @param  htim : TIM handle
  * @retval None
  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	/* USER CODE BEGIN Callback 0 */
 
 	/* USER CODE END Callback 0 */
-	if (htim->Instance == TIM2)
-	{
+	if (htim->Instance == TIM2) {
 		HAL_IncTick();
 	}
 	/* USER CODE BEGIN Callback 1 */
@@ -1327,12 +1237,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
  * @param  None
  * @retval None
  */
-void _Error_Handler(char * file, int line)
-{
+void _Error_Handler(char * file, int line) {
 	/* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
-	while (1)
-	{
+	while (1) {
 	}
 	/* USER CODE END Error_Handler_Debug */
 }

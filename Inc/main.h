@@ -56,8 +56,8 @@
 
 /* Private define ------------------------------------------------------------*/
 
-#define Button_Pin GPIO_PIN_13
-#define Button_GPIO_Port GPIOC
+#define Buzzer_Pin GPIO_PIN_13
+#define Buzzer_GPIO_Port GPIOC
 #define LTC1_RST_Pin GPIO_PIN_14
 #define LTC1_RST_GPIO_Port GPIOC
 #define LTC1_CS_Pin GPIO_PIN_15
