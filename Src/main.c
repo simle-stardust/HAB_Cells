@@ -163,7 +163,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 			received_buf[received_cnt - 1] = '\0';
 			xQueueSendFromISR(qFromUartDebugHandle, &received_char, NULL);
 		}
-		HAL_UART_Receive_IT(&huart3, &received_char, 1);
+		HAL_UART_Receive_IT(&UART_DEBUG, &received_char, 1);
 	}
 }
 
@@ -712,7 +712,7 @@ void StartSaveTask(void const * argument) {
 	f_mount(&my_fatfs, SD_Path, 1);
 	statusFlags |= WriteToSD((uint8_t*) initMessage, sizeof(initMessage));
 
-	//HAL_UART_Transmit_IT(&huart3, initMessage, sizeof(initMessage));
+	//HAL_UART_Transmit_IT(&UART_DEBUG, initMessage, sizeof(initMessage));
 
 	memset(SDBuffer, 0, sizeof(SDBuffer));
 
@@ -727,7 +727,7 @@ void StartSaveTask(void const * argument) {
 					(int32_t) (received_kp * 100.0f),
 					(int32_t) (received_ki * 100.0f),
 					(int32_t) (received_kd * 100.0f));
-			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 			flag_PID_changed = 0;
 		}
 
@@ -765,9 +765,9 @@ void StartSaveTask(void const * argument) {
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"==============================\r\nTime = %s\r\n",
 					SDBuffer);
-			HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinSetValuesKom:");
-			HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+			HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
 			for (uint32_t i = 0; i < 30; i++) {
 				// truncate to 16 bit
 				tempToWrite[i] = (int16_t) (data.Temps[i] / 10);
@@ -784,11 +784,11 @@ void StartSaveTask(void const * argument) {
 						tempToWrite[i + 3], tempToWrite[i + 4],
 						tempToWrite[i + 5]);
 				if (UARTBufLen > 0) {
-					HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+					HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 				}
 				if (SDBufLen > 0) {
 					statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-					HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+					HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
 				}
 			}
 
@@ -800,11 +800,11 @@ void StartSaveTask(void const * argument) {
 					data.Signals[0], data.Signals[1], data.Signals[2],
 					data.Signals[3], data.Signals[4], data.Signals[5]);
 			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 			}
 			if (SDBufLen > 0) {
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
 			}
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"Upper Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
@@ -814,11 +814,11 @@ void StartSaveTask(void const * argument) {
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
 			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 			}
 			if (SDBufLen > 0) {
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
 			}
 
 			UARTBufLen =
@@ -829,7 +829,7 @@ void StartSaveTask(void const * argument) {
 							data.LTCStatusMask[4], data.LTCStatusMask[5],
 							statusFlags);
 			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 			}
 
 			SDBufLen = sprintf((char*) SDBuffer,
@@ -846,7 +846,7 @@ void StartSaveTask(void const * argument) {
 							"ADC Thermal internal: %u\r\nADC Thermal external: %u\r\nADC Ele: %u\r\n",
 							ADC_thermal_int, ADC_thermal_ext, ADC_ele);
 			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 			}
 
 			SDBufLen = sprintf((char*) SDBuffer, "%u,%u,%u\r\n",
@@ -858,10 +858,10 @@ void StartSaveTask(void const * argument) {
 			SDBufLen = sprintf((char*) SDBuffer, "%hu!\r\n",
 					(int16_t) statusFlags);
 			if (SDBufLen > 0) {
-				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
 			}
 
-			if (HAL_UART_Receive(&huart1, UARTRxBuf, 10, 100) != HAL_TIMEOUT) {
+			if (HAL_UART_Receive(&UART_WIFI, UARTRxBuf, 10, 100) != HAL_TIMEOUT) {
 				// data from WiFi received
 				if (strstr((char*) UARTRxBuf, Ok) != NULL) {
 					additionalFlags &= ~ADDITIONAL_FLAGS_WIFI_ERR;
@@ -875,10 +875,10 @@ void StartSaveTask(void const * argument) {
 
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinGetWysokosc!\r\n");
 			if (SDBufLen > 0) {
-				HAL_UART_Transmit(&huart1, SDBuffer, SDBufLen, 100);
+				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
 			}
 
-			if (HAL_UART_Receive(&huart1, UARTRxBuf, 4, 100) != HAL_TIMEOUT) {
+			if (HAL_UART_Receive(&UART_WIFI, UARTRxBuf, 4, 100) != HAL_TIMEOUT) {
 				altitude = (int32_t) (((uint32_t) UARTRxBuf[0] << 24)
 						+ ((uint32_t) UARTRxBuf[1] << 16)
 						+ ((uint32_t) UARTRxBuf[2] << 8) + (UARTRxBuf[3]));
@@ -897,7 +897,7 @@ void StartSaveTask(void const * argument) {
 		 UARTBufLen = sprintf((char*) UARTBuffer, "Cnt = %02x\r\n", received_cnt);
 		 if (UARTBufLen > 0)
 		 {
-		 HAL_UART_Transmit(&huart3, UARTBuffer, UARTBufLen, 100);
+		 HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 		 }
 		 */
 
@@ -1031,7 +1031,7 @@ void StartControlTask(void const * argument) {
 
 	memset(received_buf, 0, sizeof(received_buf));
 	// Start listening on UART
-	HAL_UART_Receive_IT(&huart3, &received_char, 1);
+	HAL_UART_Receive_IT(&UART_DEBUG, &received_char, 1);
 
 	/* Infinite loop */
 	for (;;) {
