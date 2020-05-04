@@ -98,6 +98,10 @@ osMessageQId qToHeatingTaskHandle;
 osMessageQId qToSaveTaskHandle;
 osMessageQId qToWatchdogTaskHandle;
 osMessageQId qFromUartDebugHandle;
+osSemaphoreId UART_WiFi_Tx_CpltHandle;
+osSemaphoreId UART_WiFi_Rx_CpltHandle;
+osSemaphoreId UART_Debug_Rx_CpltHandle;
+osSemaphoreId UART_Debug_Tx_CpltHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -155,15 +159,33 @@ void StartControlTask(void const * argument);
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance == USART3) {
+
+	if (huart->Instance == USART3) 
+	{
 		if (received_cnt < sizeof(received_buf) - 1) {
 			received_buf[received_cnt++] = received_char;
 		}
 		if (received_char == '\r') {
 			received_buf[received_cnt - 1] = '\0';
-			xQueueSendFromISR(qFromUartDebugHandle, &received_char, NULL);
+			xSemaphoreGiveFromISR(UART_Debug_Rx_CpltHandle, NULL);
 		}
-		HAL_UART_Receive_IT(&UART_DEBUG, &received_char, 1);
+		HAL_UART_Receive_DMA(&UART_DEBUG, &received_char, 1);
+	}
+	if (huart->Instance == UART1)
+	{
+		xSemaphoreGiveFromISR(UART_WiFi_Rx_CpltHandle, NULL);
+	}
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+
+	if (huart->Instance == USART3) 
+	{
+		xSemaphoreGiveFromISR(UART_WiFi_Tx_CpltHandle, NULL);
+	}
+	if (huart->Instance == UART1)
+	{
+		xSemaphoreGiveFromISR(UART_WiFi_Rx_CpltHandle, NULL);
 	}
 }
 
@@ -213,6 +235,27 @@ int main(void) {
 	/* USER CODE BEGIN RTOS_MUTEX */
 	/* add mutexes, ... */
 	/* USER CODE END RTOS_MUTEX */
+
+	/* Create the semaphores(s) */
+	/* definition and creation of UART_WiFi_Tx_Cplt */
+	osSemaphoreDef(UART_WiFi_Tx_Cplt);
+	UART_WiFi_Tx_CpltHandle = osSemaphoreCreate(osSemaphore(UART_WiFi_Tx_Cplt),
+			1);
+
+	/* definition and creation of UART_WiFi_Rx_Cplt */
+	osSemaphoreDef(UART_WiFi_Rx_Cplt);
+	UART_WiFi_Rx_CpltHandle = osSemaphoreCreate(osSemaphore(UART_WiFi_Rx_Cplt),
+			1);
+
+	/* definition and creation of UART_Debug_Rx_Cplt */
+	osSemaphoreDef(UART_Debug_Rx_Cplt);
+	UART_Debug_Rx_CpltHandle = osSemaphoreCreate(
+			osSemaphore(UART_Debug_Rx_Cplt), 1);
+
+	/* definition and creation of UART_Debug_Tx_Cplt */
+	osSemaphoreDef(UART_Debug_Tx_Cplt);
+	UART_Debug_Tx_CpltHandle = osSemaphoreCreate(
+			osSemaphore(UART_Debug_Tx_Cplt), 1);
 
 	/* USER CODE BEGIN RTOS_SEMAPHORES */
 	/* add semaphores, ... */
@@ -531,8 +574,8 @@ static void MX_GPIO_Init(void) {
 
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOA,
-	LowerHeater1_Pin | UpperHeater1_Pin | LowerHeater2_Pin | UpperHeater2_Pin,
-			GPIO_PIN_RESET);
+			LowerHeater1_Pin | UpperHeater1_Pin | LowerHeater2_Pin
+					| UpperHeater2_Pin, GPIO_PIN_RESET);
 
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOA, LTC2_RST_Pin | LTC6_CS_Pin | LTC6_RST_Pin,
@@ -712,7 +755,8 @@ void StartSaveTask(void const * argument) {
 	f_mount(&my_fatfs, SD_Path, 1);
 	statusFlags |= WriteToSD((uint8_t*) initMessage, sizeof(initMessage));
 
-	//HAL_UART_Transmit_IT(&UART_DEBUG, initMessage, sizeof(initMessage));
+
+	HAL_UART_Transmit_DMA(&UART_DEBUG, initMessage, sizeof(initMessage));
 
 	memset(SDBuffer, 0, sizeof(SDBuffer));
 
@@ -721,18 +765,23 @@ void StartSaveTask(void const * argument) {
 
 		tick = osKernelSysTick();
 		statusFlags &= LOOP_CLEAR_MASK;
-		if (flag_PID_changed) {
+		if (flag_PID_changed) 
+		{
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"PID changed, P= %ld, I= %ld, D= %ld\r\n",
 					(int32_t) (received_kp * 100.0f),
 					(int32_t) (received_ki * 100.0f),
 					(int32_t) (received_kd * 100.0f));
-			HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
+			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 100);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
 			flag_PID_changed = 0;
 		}
 
 		// Fetch values from all other tasks
-		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE) {
+		if (xQueueReceive(qToSaveTaskHandle, &data, 0) == pdTRUE) 
+		{
 			// Write to SD and WiFi
 			ltcReadoutTick = osKernelSysTick();
 
@@ -765,61 +814,75 @@ void StartSaveTask(void const * argument) {
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"==============================\r\nTime = %s\r\n",
 					SDBuffer);
-			HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
+			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinSetValuesKom:");
-			HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
+			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+
+
 			for (uint32_t i = 0; i < 30; i++) {
 				// truncate to 16 bit
 				tempToWrite[i] = (int16_t) (data.Temps[i] / 10);
 			}
-			for (uint32_t i = 0; i < 30; i += 6) {
+			for (uint32_t i = 0; i < 30; i += 6) 
+			{
 
-				SDBufLen = sprintf((char*) SDBuffer, "%hd,%hd,%hd,%hd,%hd,%hd,",
-						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
-						tempToWrite[i + 3], tempToWrite[i + 4],
-						tempToWrite[i + 5]);
 				UARTBufLen = sprintf((char*) UARTBuffer,
 						"%s %hd,%hd,%hd,%hd,%hd,%hd\r\n", dataStrings[i / 6],
 						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
 						tempToWrite[i + 3], tempToWrite[i + 4],
 						tempToWrite[i + 5]);
-				if (UARTBufLen > 0) {
-					HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
-				}
-				if (SDBufLen > 0) {
-					statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-					HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
-				}
+
+				xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
+				HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
+				SDBufLen = sprintf((char*) SDBuffer, "%hd,%hd,%hd,%hd,%hd,%hd,",
+						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
+						tempToWrite[i + 3], tempToWrite[i + 4],
+						tempToWrite[i + 5]);
+
+				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
+				xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
+				HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+
 			}
 
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"Lower Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
 					data.Signals[0], data.Signals[1], data.Signals[2],
 					data.Signals[3], data.Signals[4], data.Signals[5]);
+			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
+			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
 					data.Signals[0], data.Signals[1], data.Signals[2],
 					data.Signals[3], data.Signals[4], data.Signals[5]);
-			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
-			}
-			if (SDBufLen > 0) {
-				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
-			}
+
+			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+
+
 			UARTBufLen = sprintf((char*) UARTBuffer,
 					"Upper Signals: %hu,%hu,%hu,%hu,%hu,%hu\r\n",
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
+			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
+
+
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
-			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
-			}
-			if (SDBufLen > 0) {
-				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
-			}
+			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
+			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+
+
 
 			UARTBufLen =
 					sprintf((char*) UARTBuffer,
@@ -828,40 +891,38 @@ void StartSaveTask(void const * argument) {
 							data.LTCStatusMask[2], data.LTCStatusMask[3],
 							data.LTCStatusMask[4], data.LTCStatusMask[5],
 							statusFlags);
-			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
-			}
+
+			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+
 
 			SDBufLen = sprintf((char*) SDBuffer,
 					"%02x,%02x,%02x,%02x,%02x,%02x,%02x,",
 					data.LTCStatusMask[0], data.LTCStatusMask[1],
 					data.LTCStatusMask[2], data.LTCStatusMask[3],
 					data.LTCStatusMask[4], data.LTCStatusMask[5], statusFlags);
-			if (SDBufLen > 0) {
-				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-			}
+			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 
 			UARTBufLen =
 					sprintf((char*) UARTBuffer,
 							"ADC Thermal internal: %u\r\nADC Thermal external: %u\r\nADC Ele: %u\r\n",
 							ADC_thermal_int, ADC_thermal_ext, ADC_ele);
-			if (UARTBufLen > 0) {
-				HAL_UART_Transmit(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
-			}
+
+			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
 
 			SDBufLen = sprintf((char*) SDBuffer, "%u,%u,%u\r\n",
 					ADC_thermal_int, ADC_thermal_ext, ADC_ele);
-			if (SDBufLen > 0) {
-				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
-			}
+			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 
 			SDBufLen = sprintf((char*) SDBuffer, "%hu!\r\n",
 					(int16_t) statusFlags);
-			if (SDBufLen > 0) {
-				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
-			}
+			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
+			HAL_UART_Receive_DMA(&UART_WIFI, UARTRxBuf, 10)
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
 
-			if (HAL_UART_Receive(&UART_WIFI, UARTRxBuf, 10, 100) != HAL_TIMEOUT) {
+			if (xSemaphoreTake(UART_WiFi_Rx_CpltHandle, 500) == pdTRUE) 
+			{
 				// data from WiFi received
 				if (strstr((char*) UARTRxBuf, Ok) != NULL) {
 					additionalFlags &= ~ADDITIONAL_FLAGS_WIFI_ERR;
@@ -874,11 +935,12 @@ void StartSaveTask(void const * argument) {
 			}
 
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinGetWysokosc!\r\n");
-			if (SDBufLen > 0) {
-				HAL_UART_Transmit(&UART_WIFI, SDBuffer, SDBufLen, 100);
-			}
+			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
+			HAL_UART_Receive_DMA(&UART_WIFI, UARTRxBuf, 4);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
 
-			if (HAL_UART_Receive(&UART_WIFI, UARTRxBuf, 4, 100) != HAL_TIMEOUT) {
+			if (xSemaphoreTake(UART_WiFi_Rx_CpltHandle, 500) == pdTRUE) 
+			{
 				altitude = (int32_t) (((uint32_t) UARTRxBuf[0] << 24)
 						+ ((uint32_t) UARTRxBuf[1] << 16)
 						+ ((uint32_t) UARTRxBuf[2] << 8) + (UARTRxBuf[3]));
@@ -1031,31 +1093,29 @@ void StartControlTask(void const * argument) {
 
 	memset(received_buf, 0, sizeof(received_buf));
 	// Start listening on UART
-	HAL_UART_Receive_IT(&UART_DEBUG, &received_char, 1);
+	HAL_UART_Receive_DMA(&UART_DEBUG, &received_char, 1);
 
 	/* Infinite loop */
 	for (;;) {
 		// check if data on UART was received
-		if (xQueueReceive(qFromUartDebugHandle, &uart_char, 0) == pdTRUE) {
-			// "\r" sign was received from UART?
-			if (uart_char == '\r') {
-				// check if a valid command has been received
-				if (sscanf((char*) received_buf,
-						"P%" SCNd32 ",I%" SCNd32 ",D%" SCNd32, &received_kp_int,
-						&received_ki_int, &received_kd_int) == 3) {
-					// three arguments received, assign them and reinit PID
-					received_kp = ((float) received_kp_int) / 100.0f;
-					received_ki = ((float) received_ki_int) / 100.0f;
-					received_kd = ((float) received_kd_int) / 100.0f;
+		if (xSemaphoreTake(UART_Debug_Rx_CpltHandle, 0) == pdTRUE) 
+		{
+			if (sscanf((char*) received_buf,
+					"P%" SCNd32 ",I%" SCNd32 ",D%" SCNd32, &received_kp_int,
+					&received_ki_int, &received_kd_int) == 3) 
+			{
+				// three arguments received, assign them and reinit PID
+				received_kp = ((float) received_kp_int) / 100.0f;
+				received_ki = ((float) received_ki_int) / 100.0f;
+				received_kd = ((float) received_kd_int) / 100.0f;
 
-					for (uint32_t i = 0; i < 12; i++) {
-						PID[i].Kp = received_kp; /* Proporcional */
-						PID[i].Ki = received_ki; /* Integral */
-						PID[i].Kd = received_kd; /* Derivative */
-						arm_pid_init_f32(&PID[i], 1);
+				for (uint32_t i = 0; i < 12; i++) {
+					PID[i].Kp = received_kp; /* Proporcional */
+					PID[i].Ki = received_ki; /* Integral */
+					PID[i].Kd = received_kd; /* Derivative */
+					arm_pid_init_f32(&PID[i], 1);
 
-						flag_PID_changed = 1;
-					}
+					flag_PID_changed = 1;
 				}
 			}
 			received_cnt = 0;
