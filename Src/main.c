@@ -171,7 +171,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		}
 		HAL_UART_Receive_DMA(&UART_DEBUG, &received_char, 1);
 	}
-	if (huart->Instance == UART1)
+	if (huart->Instance == USART1)
 	{
 		xSemaphoreGiveFromISR(UART_WiFi_Rx_CpltHandle, NULL);
 	}
@@ -183,7 +183,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
 	{
 		xSemaphoreGiveFromISR(UART_WiFi_Tx_CpltHandle, NULL);
 	}
-	if (huart->Instance == UART1)
+	if (huart->Instance == USART1)
 	{
 		xSemaphoreGiveFromISR(UART_WiFi_Rx_CpltHandle, NULL);
 	}
@@ -774,7 +774,7 @@ void StartSaveTask(void const * argument) {
 					(int32_t) (received_kd * 100.0f));
 
 			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 100);
-			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen);
 
 			flag_PID_changed = 0;
 		}
@@ -816,11 +816,11 @@ void StartSaveTask(void const * argument) {
 					SDBuffer);
 
 			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen);
 
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinSetValuesKom:");
 			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen);
 
 
 			for (uint32_t i = 0; i < 30; i++) {
@@ -837,7 +837,7 @@ void StartSaveTask(void const * argument) {
 						tempToWrite[i + 5]);
 
 				xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
-				HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+				HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen);
 
 				SDBufLen = sprintf((char*) SDBuffer, "%hd,%hd,%hd,%hd,%hd,%hd,",
 						tempToWrite[i], tempToWrite[i + 1], tempToWrite[i + 2],
@@ -846,7 +846,7 @@ void StartSaveTask(void const * argument) {
 
 				statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 				xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
-				HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+				HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen);
 
 			}
 
@@ -855,7 +855,7 @@ void StartSaveTask(void const * argument) {
 					data.Signals[0], data.Signals[1], data.Signals[2],
 					data.Signals[3], data.Signals[4], data.Signals[5]);
 			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen);
 
 			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 			SDBufLen = sprintf((char*) SDBuffer, "%hu,%hu,%hu,%hu,%hu,%hu,",
@@ -863,7 +863,7 @@ void StartSaveTask(void const * argument) {
 					data.Signals[3], data.Signals[4], data.Signals[5]);
 
 			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen);
 
 
 			UARTBufLen = sprintf((char*) UARTBuffer,
@@ -871,7 +871,7 @@ void StartSaveTask(void const * argument) {
 					data.Signals[6], data.Signals[7], data.Signals[8],
 					data.Signals[9], data.Signals[10], data.Signals[11]);
 			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen);
 
 
 
@@ -880,7 +880,7 @@ void StartSaveTask(void const * argument) {
 					data.Signals[9], data.Signals[10], data.Signals[11]);
 			statusFlags |= WriteToSD(SDBuffer, SDBufLen);
 			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen);
 
 
 
@@ -893,7 +893,7 @@ void StartSaveTask(void const * argument) {
 							statusFlags);
 
 			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen);
 
 
 			SDBufLen = sprintf((char*) SDBuffer,
@@ -909,7 +909,7 @@ void StartSaveTask(void const * argument) {
 							ADC_thermal_int, ADC_thermal_ext, ADC_ele);
 
 			xSemaphoreTake(UART_Debug_Tx_CpltHandle, 200);
-			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_DEBUG, UARTBuffer, UARTBufLen);
 
 			SDBufLen = sprintf((char*) SDBuffer, "%u,%u,%u\r\n",
 					ADC_thermal_int, ADC_thermal_ext, ADC_ele);
@@ -918,8 +918,8 @@ void StartSaveTask(void const * argument) {
 			SDBufLen = sprintf((char*) SDBuffer, "%hu!\r\n",
 					(int16_t) statusFlags);
 			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
-			HAL_UART_Receive_DMA(&UART_WIFI, UARTRxBuf, 10)
-			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+			HAL_UART_Receive_DMA(&UART_WIFI, UARTRxBuf, 10);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen);
 
 			if (xSemaphoreTake(UART_WiFi_Rx_CpltHandle, 500) == pdTRUE) 
 			{
@@ -937,7 +937,7 @@ void StartSaveTask(void const * argument) {
 			SDBufLen = sprintf((char*) SDBuffer, "@MarcinGetWysokosc!\r\n");
 			xSemaphoreTake(UART_WiFi_Tx_CpltHandle, 200);
 			HAL_UART_Receive_DMA(&UART_WIFI, UARTRxBuf, 4);
-			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen, 100);
+			HAL_UART_Transmit_DMA(&UART_WIFI, SDBuffer, SDBufLen);
 
 			if (xSemaphoreTake(UART_WiFi_Rx_CpltHandle, 500) == pdTRUE) 
 			{
